@@ -23,6 +23,9 @@ void initialize_rti_common(rti_common_t* _rti_common) {
   rti_common->max_stop_tag = NEVER_TAG;
   rti_common->number_of_scheduling_nodes = 0;
   rti_common->num_scheduling_nodes_handling_stop = 0;
+
+  //additional parameters
+  rti_common->number_of_reconnect_nodes = 0;
 }
 
 // FIXME: Should scheduling_nodes tracing use the same mechanism as federates?

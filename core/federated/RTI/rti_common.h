@@ -89,6 +89,9 @@ typedef struct rti_common_t {
 
   // The RTI mutex for making thread-safe access to the shared state.
   lf_mutex_t* mutex;
+
+  // Number of terminated federate nodes.
+  int32_t number_of_reconnect_nodes;
 } rti_common_t;
 
 typedef struct {

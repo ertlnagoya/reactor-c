@@ -140,6 +140,10 @@ void usage(int argc, const char* argv[]) {
   lf_print("  -a, --auth Turn on HMAC authentication options.\n");
   lf_print("  -t, --tracing Turn on tracing.\n");
 
+  //再接続の有効化をコマンドライン引数に追加
+  lf_print(" -r, --reconnection_enable <n>");
+  lf_print(" Enable reconnection and specify when to restart\n");
+
   lf_print("Command given:");
   for (int i = 0; i < argc; i++) {
     lf_print("%s ", argv[i]);
@@ -266,6 +270,23 @@ int process_args(int argc, const char* argv[]) {
       rti.authentication_enabled = true;
     } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--tracing") == 0) {
       rti.base.tracing_enabled = true;
+    } else if (strcmp(argv[i], "-r") == 0) {    //Add restart arguments
+      // 
+      if (argc < i + 2) {
+        lf_print_error("--reconnection_enable needs an integer argument.");
+        usage(argc, argv);
+        return 0;
+      }
+      i++;
+      long restart_cycle_time = strtol(argv[i], NULL, 10);
+      if (restart_cycle_time <= 0L || restart_cycle_time == LONG_MAX || restart_cycle_time == LONG_MIN) {
+        lf_print_error("--reconnection_enable needs a valid positive integer argument.");
+        usage(argc, argv);
+        return 0;
+      }
+      rti.restart_cycle = (int64_t)restart_cycle_time; // FIXME: Loses numbers on 64-bit machines
+      rti.reconnection_validation = true;
+      lf_print("RTI: Reconnection is enabled. Restart cycle is %ld", rti.restart_cycle);
     } else if (strcmp(argv[i], " ") == 0) {
       // Tolerate spaces
       continue;

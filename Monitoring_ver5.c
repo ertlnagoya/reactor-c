@@ -2,15 +2,17 @@
 ファイルの読み書きによるプロセス間通信を行う
 inotify系の関数を用いて、書き込みを監視する。
 監視対象はファイルで、ファイルの配置場所は
-あらかじめfile_path（inotify_fdにしている）として指定しておく。
+あらかじめfile_pathとして指定しておく。
 
-コマンド、通信用ファイルのパスを先に格納
+コマンド、通信用ファイルのパスなど先に格納
 
 書き込み内容を読み取った後に内容を消去するように変更
 
 並列実行を考慮した監視を可能にする。以下，並列実行の要素
 １．afterを加えることによるreactionの同時実行（同じタグで複数reactionがトリガされる場合に生成）
 ２．thread生成による並列実行
+
+停止後の再起動機能を追加（シングルスレッドで実装しているが，別スレッドとした方がよい？）
 */
 
 #define _GNU_SOURCE
@@ -33,10 +35,12 @@ inotify系の関数を用いて、書き込みを監視する。
 #include <signal.h>
 
 
-#define RTI_federate_nodes 2 //RTIを含めたfederate数
+#define RTI_federate_nodes 3 //RTIを含めたfederate数
 #define EVENT_BUF_LEN     (1024 * (EVENT_SIZE + 16))
 #define EVENT_SIZE  (sizeof(struct inotify_event))
 #define max_cp_num 10
+#define p_state_stop 0
+#define p_state_starting 1
 
 
 typedef struct check_point_info {
@@ -56,6 +60,43 @@ typedef struct process_info {
     int deadline[10];      //デッドラインを格納する配列（各reaction単位）
     cp_info* cp_array[max_cp_num];  //各cpに関しての情報を格納
 } process_info;
+
+/*
+再起動を行う関数
+*/
+void restartProgram(process_info *p_info) {
+    for(int i =0; i<RTI_federate_nodes; i++) {
+        if(p_info[i].p_state == p_state_stop) {
+            int result = system(p_info[i].command);
+            if (result == -1) {
+                //デバッグ
+                perror("Monitoring: Error executing program");
+            } else {
+                //デバッグ
+                printf("Monitoring: Command %s executed successfully\n", p_info[i].command);
+
+                //プロセスの状態を更新
+                p_info[i].p_state = p_state_starting;
+                
+                //Pid取得
+                p_info[i].fd = fopen(p_info[i].file_path, "r+");
+                if(p_info[i].fd == NULL) {
+                    perror("Monitoring: Faild make file");
+                } else {
+                    fscanf(p_info[i].fd, "%d", &(p_info[i].pid));
+                    printf("Monitoring: scanned pid %d\n", p_info[i].pid);
+                    int fd = fileno(p_info[i].fd);
+                    if(ftruncate(fd, 0) != 0) {
+                        perror("Monitoring: Failed to truncate file\n");
+                        close(fd);
+                    }
+                }
+                fclose(p_info[i].fd);
+                printf("Monitoring: file closed\n");
+            }
+        }
+    }
+}
 
 /*
 受信したCPを基に，カウント値を更新する関数
@@ -79,10 +120,10 @@ void time_count_update(process_info *p_info) {
 タイマーイベントによるカウントダウン．カウント値0で対応プロセスを強制停止
 */
 void count_down(process_info *p_info) {
-   //sudoでkillする．system()を用いる
+    //sudoでkillする．system()を用いる
     for(int i =0; i<RTI_federate_nodes; i++) {
         for(int j = 0; j<max_cp_num; j++) {
-            if(p_info[i].cp_array[j]->check_do == true && p_info[i].p_state == 1) {
+            if(p_info[i].cp_array[j]->check_do == true && p_info[i].p_state == p_state_starting) {
                 p_info[i].cp_array[j]->timer_count--;
                 //カウント値が0であれば停止
                 if(p_info[i].cp_array[j]->timer_count == 0) {
@@ -96,7 +137,7 @@ void count_down(process_info *p_info) {
                     } else {
                         printf("Monitoring: kill success\n");
                         //プロセス状態を更新
-                        p_info[i].p_state = 0;
+                        p_info[i].p_state = p_state_stop;
                     }
                 }
             }
@@ -112,7 +153,7 @@ void p_info_write(process_info *p_info) {
     for (int i = 0; i < RTI_federate_nodes; ++i) {
         // 各 process_info 構造体のメンバーを初期化
         p_info[i].pid = 0;
-        p_info[i].p_state = 0;
+        p_info[i].p_state = p_state_stop;
         p_info[i].fd = NULL;
         memset(p_info[i].file_path, 0, sizeof(p_info[i].file_path));
         memset(p_info[i].command, 0, sizeof(p_info[i].command));
@@ -138,21 +179,24 @@ void p_info_write(process_info *p_info) {
     }
 
     //コマンドを格納
-    strcpy(p_info[0].command, "taskset -c 1 RTI -n 1 & echo $! > /home/yoshinoriterazawa/LF/RTI.txt");
+    strcpy(p_info[0].command, "taskset -c 1 RTI -n 2 -r 3000000 & echo $! > /home/yoshinoriterazawa/LF/RTI.txt");
     strcpy(p_info[1].command, "taskset -c 0,2 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__writer & echo $! > /home/yoshinoriterazawa/LF/federate_writer.txt");
-
+    strcpy(p_info[2].command, "taskset -c 3 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__m_writer & echo $! > /home/yoshinoriterazawa/LF/federate_m_writer.txt");
     //通信用ファイルのパスを格納
     strcpy(p_info[0].file_path, "/home/yoshinoriterazawa/LF/RTI.txt");
     strcpy(p_info[1].file_path, "/home/yoshinoriterazawa/LF/federate_writer.txt");
+    strcpy(p_info[2].file_path, "/home/yoshinoriterazawa/LF/federate_m_writer.txt");
 
     //実行シーケンスの最初のCPを設定
     p_info[1].cp_array[0]->start_cp = true;
     p_info[1].cp_array[4]->start_cp = true;
+    p_info[2].cp_array[0]->start_cp = true;
     
 
     //end_cp_num（最後のCP番号）を格納（とりあえずfederateのみ）
     p_info[1].cp_array[3]->end_cp = true;
     p_info[1].cp_array[7]->end_cp = true;
+    p_info[2].cp_array[3]->end_cp = true;
 
     //デッドラインを格納（とりあえずfederateのみ）
     p_info[1].deadline[0] = 1010;
@@ -161,6 +205,10 @@ void p_info_write(process_info *p_info) {
     p_info[1].deadline[4] = 1010;
     p_info[1].deadline[5] = 100;
     p_info[1].deadline[6] = 1010;
+
+    p_info[2].deadline[0] = 1010;
+    p_info[2].deadline[1] = 100;
+    p_info[2].deadline[2] = 100;
 }
 
 /*
@@ -184,7 +232,7 @@ void executeProgram(process_info *p_info, int wd[], int *inotify_fd) {
             printf("Monitoring: Command %s executed successfully\n", p_info[i].command);
 
             //プロセスの状態を更新
-            p_info[i].p_state = 1;
+            p_info[i].p_state = p_state_starting;
             
             //Pid取得
             p_info[i].fd = fopen(p_info[i].file_path, "r+");
@@ -298,6 +346,7 @@ void watch_cp_write(process_info *p_info, int wd[], struct itimerspec timer, int
                     event_point += EVENT_SIZE + event->len;
                 }
             }
+            restartProgram(p_info);
         }
     }
 }

@@ -40,6 +40,11 @@ static rti_remote_t* rti_remote;
 
 bool _lf_federate_reports_error = false;
 
+//Prepare an array to create a reconnection thread.
+lf_thread_t reconnect_thread[10];
+//Subscript number of the thread array.
+int reconnect_thread_num = 0;
+
 // A convenient macro for getting the `federate_info_t *` at index `_idx`
 // and casting it.
 #define GET_FED_INFO(_idx) (federate_info_t*)rti_remote->base.scheduling_nodes[_idx]
@@ -51,6 +56,10 @@ lf_cond_t sent_start_time;
 extern int lf_critical_section_enter(environment_t* env) { return lf_mutex_lock(&rti_mutex); }
 
 extern int lf_critical_section_exit(environment_t* env) { return lf_mutex_unlock(&rti_mutex); }
+
+//Declare the prototype of the function.
+void* lf_reconnect_to_federates();
+void handle_restart_timestamp(federate_info_t* my_fed);
 
 /**
  * Create a server and enable listening for socket connections.
@@ -836,6 +845,76 @@ void handle_timestamp(federate_info_t* my_fed) {
   LF_MUTEX_UNLOCK(&rti_mutex);
 }
 
+void handle_restart_timestamp(federate_info_t* my_fed) {
+  unsigned char buffer[sizeof(int64_t)];
+  // Read bytes from the socket. We need 8 bytes.
+  read_from_socket_fail_on_error(&my_fed->socket, sizeof(int64_t), (unsigned char*)&buffer, NULL,
+                                 "ERROR reading timestamp from federate %d.\n", my_fed->enclave.id);
+
+  int64_t timestamp = swap_bytes_if_big_endian_int64(*((int64_t*)(&buffer)));
+  if (rti_remote->base.tracing_enabled) {
+    tag_t tag = {.time = timestamp, .microstep = 0};
+    tracepoint_rti_from_federate(receive_TIMESTAMP, my_fed->enclave.id, &tag);
+  }
+  LF_PRINT_DEBUG("RTI received timestamp message with time: " PRINTF_TIME ".", timestamp);
+
+  //Calculate restart time
+  int64_t maximum_granted_tag = 0;
+  int64_t restart_timestamp = 0;
+  for(int i=0; i<rti_remote->base.number_of_scheduling_nodes; i++) {
+    federate_info_t* fed = GET_FED_INFO(i);
+    maximum_granted_tag = fed->enclave.last_granted.time;
+  }
+  for(int i=0; restart_timestamp <= maximum_granted_tag; i++) {
+    restart_timestamp = rti_remote->max_start_time + DELAY_START + rti_remote->restart_cycle * i;
+  }
+
+  LF_MUTEX_LOCK(&rti_mutex);
+  rti_remote->num_feds_proposed_start++;
+  if (restart_timestamp > rti_remote->max_restart_timestamp) {
+    rti_remote->max_restart_timestamp = restart_timestamp;
+  }
+  if (rti_remote->num_feds_proposed_start == rti_remote->base.number_of_scheduling_nodes) {
+    // All federates have proposed a start time.
+    lf_cond_broadcast(&received_start_times);
+  } else {
+    // Some federates have not yet proposed a start time.
+    // wait for a notification.
+    while (rti_remote->num_feds_proposed_start < rti_remote->base.number_of_scheduling_nodes) {
+      // FIXME: Should have a timeout here?
+      lf_cond_wait(&received_start_times);
+    }
+  }
+
+  LF_MUTEX_UNLOCK(&rti_mutex);
+
+  // Send back to the federate the maximum time plus an offset on a TIMESTAMP
+  // message.
+  unsigned char start_time_buffer[MSG_TYPE_TIMESTAMP_LENGTH];
+  start_time_buffer[0] = MSG_TYPE_TIMESTAMP;
+  // Add an offset to this start time to get everyone starting together.
+  start_time = rti_remote->max_restart_timestamp;
+  lf_tracing_set_start_time(start_time);
+  encode_int64(swap_bytes_if_big_endian_int64(start_time), &start_time_buffer[1]);
+
+  if (rti_remote->base.tracing_enabled) {
+    tag_t tag = {.time = start_time, .microstep = 0};
+    tracepoint_rti_to_federate(send_TIMESTAMP, my_fed->enclave.id, &tag);
+  }
+  if (write_to_socket(my_fed->socket, MSG_TYPE_TIMESTAMP_LENGTH, start_time_buffer)) {
+    lf_print_error("Failed to send the starting time to federate %d.", my_fed->enclave.id);
+  }
+
+  LF_MUTEX_LOCK(&rti_mutex);
+  // Update state for the federate to indicate that the MSG_TYPE_TIMESTAMP
+  // message has been sent. That MSG_TYPE_TIMESTAMP message grants time advance to
+  // the federate to the start time.
+  my_fed->enclave.state = GRANTED;
+  lf_cond_broadcast(&sent_start_time);
+  LF_PRINT_LOG("RTI sent start time " PRINTF_TIME " to federate %d.", start_time, my_fed->enclave.id);
+  LF_MUTEX_UNLOCK(&rti_mutex);
+}
+
 void send_physical_clock(unsigned char message_type, federate_info_t* fed, socket_type_t socket_type) {
   if (fed->enclave.state == NOT_CONNECTED) {
     lf_print_warning("Clock sync: RTI failed to send physical time to federate %d. Socket not connected.\n",
@@ -1012,8 +1091,14 @@ static void handle_federate_failed(federate_info_t* my_fed) {
   bool* visited = (bool*)calloc(rti_remote->base.number_of_scheduling_nodes, sizeof(bool)); // Initializes to 0.
   notify_downstream_advance_grant_if_safe(&(my_fed->enclave), visited);
   free(visited);
-
   LF_MUTEX_UNLOCK(&rti_mutex);
+
+  // Run if reconnection is enabled.
+  if(rti_remote->reconnection_validation) {
+    rti_remote->base.number_of_reconnect_nodes++;
+    lf_thread_create(&reconnect_thread[reconnect_thread_num], lf_reconnect_to_federates, NULL);
+    reconnect_thread_num++;
+  }
 }
 
 /**
@@ -1142,6 +1227,92 @@ void* federate_info_thread_TCP(void* fed) {
   LF_MUTEX_LOCK(&rti_mutex);
   close(my_fed->socket); //  from unistd.h
   LF_MUTEX_UNLOCK(&rti_mutex);
+  if(rti_remote->reconnection_validation) {
+    rti_remote->base.number_of_reconnect_nodes++;
+    lf_thread_create(&reconnect_thread[reconnect_thread_num], lf_reconnect_to_federates, NULL);
+    reconnect_thread_num++;
+  }
+  return NULL;
+}
+
+void* reconnected_federate_info_thread_TCP(void* fed) {
+  initialize_lf_thread_id();
+  federate_info_t* my_fed = (federate_info_t*)fed;
+
+  // Buffer for incoming messages.
+  // This does not constrain the message size because messages
+  // are forwarded piece by piece.
+  unsigned char buffer[FED_COM_BUFFER_SIZE];
+
+  // Listen for messages from the federate.
+  while (my_fed->enclave.state != NOT_CONNECTED) {
+    // Read no more than one byte to get the message type.
+    int read_failed = read_from_socket(my_fed->socket, 1, buffer);
+    if (read_failed) {
+      // Socket is closed
+      lf_print_error("RTI: Socket to federate %d is closed. Exiting the thread.", my_fed->enclave.id);
+      my_fed->enclave.state = NOT_CONNECTED;
+      my_fed->socket = -1;
+      // FIXME: We need better error handling here, but do not stop execution here.
+      break;
+    }
+    LF_PRINT_DEBUG("RTI: Received message type %u from federate %d.", buffer[0], my_fed->enclave.id);
+    switch (buffer[0]) {
+    case MSG_TYPE_TIMESTAMP:
+      handle_restart_timestamp(my_fed);
+      break;
+    case MSG_TYPE_ADDRESS_QUERY:
+      handle_address_query(my_fed->enclave.id);
+      break;
+    case MSG_TYPE_ADDRESS_ADVERTISEMENT:
+      handle_address_ad(my_fed->enclave.id);
+      break;
+    case MSG_TYPE_TAGGED_MESSAGE:
+      handle_timed_message(my_fed, buffer);
+      break;
+    case MSG_TYPE_RESIGN:
+      handle_federate_resign(my_fed);
+      return NULL;
+    case MSG_TYPE_NEXT_EVENT_TAG:
+      handle_next_event_tag(my_fed);
+      break;
+    case MSG_TYPE_LATEST_TAG_COMPLETE:
+      handle_latest_tag_complete(my_fed);
+      break;
+    case MSG_TYPE_STOP_REQUEST:
+      handle_stop_request_message(my_fed); // FIXME: Reviewed until here.
+                                           // Need to also look at
+                                           // notify_advance_grant_if_safe()
+                                           // and notify_downstream_advance_grant_if_safe()
+      break;
+    case MSG_TYPE_STOP_REQUEST_REPLY:
+      handle_stop_request_reply(my_fed);
+      break;
+    case MSG_TYPE_PORT_ABSENT:
+      handle_port_absent_message(my_fed, buffer);
+      break;
+    case MSG_TYPE_FAILED:
+      handle_federate_failed(my_fed);
+      return NULL;
+    default:
+      lf_print_error("RTI received from federate %d an unrecognized TCP message type: %u.", my_fed->enclave.id,
+                     buffer[0]);
+      if (rti_remote->base.tracing_enabled) {
+        tracepoint_rti_from_federate(receive_UNIDENTIFIED, my_fed->enclave.id, NULL);
+      }
+    }
+  }
+
+  // Nothing more to do. Close the socket and exit.
+  // Prevent multiple threads from closing the same socket at the same time.
+  LF_MUTEX_LOCK(&rti_mutex);
+  close(my_fed->socket); //  from unistd.h
+  LF_MUTEX_UNLOCK(&rti_mutex);
+  if(rti_remote->reconnection_validation) {
+    rti_remote->base.number_of_reconnect_nodes++;
+    lf_thread_create(&reconnect_thread[reconnect_thread_num], lf_reconnect_to_federates, NULL);
+    reconnect_thread_num++;
+  }
   return NULL;
 }
 
@@ -1607,6 +1778,84 @@ void lf_connect_to_federates(int socket_descriptor) {
   }
 }
 
+void* lf_reconnect_to_federates() {
+  lf_print("RTI: Reconnect thread start");
+  for (int i = 0; i < rti_remote->base.number_of_reconnect_nodes; i++) {
+    // Wait for an incoming connection request.
+    struct sockaddr client_fd;
+    uint32_t client_length = sizeof(client_fd);
+    // The following blocks until a federate connects.
+    int socket_id = -1;
+    while (1) {
+      socket_id = accept(rti_remote->socket_descriptor_TCP, &client_fd, &client_length);
+      if (socket_id >= 0) {
+        // Got a socket
+        break;
+      } else if (socket_id < 0 && (errno != EAGAIN || errno != EWOULDBLOCK)) {
+        lf_print_error_system_failure("RTI failed to accept the socket.");
+      } else {
+        // Try again
+        lf_print_warning("RTI failed to accept the socket. %s. Trying again.", strerror(errno));
+        continue;
+      }
+    }
+
+// Wait for the first message from the federate when RTI -a option is on.
+#ifdef __RTI_AUTH__
+    if (rti_remote->authentication_enabled) {
+      if (!authenticate_federate(&socket_id)) {
+        lf_print_warning("RTI failed to authenticate the incoming federate.");
+        // Close the socket.
+        shutdown(socket_id, SHUT_RDWR);
+        close(socket_id);
+        socket_id = -1;
+        // Ignore the federate that failed authentication.
+        i--;
+        continue;
+      }
+    }
+#endif
+
+    // The first message from the federate should contain its ID and the federation ID.
+    int32_t fed_id = receive_and_check_fed_id_message(&socket_id, (struct sockaddr_in*)&client_fd);
+    if (fed_id >= 0 && socket_id >= 0 && receive_connection_information(&socket_id, (uint16_t)fed_id) &&
+        receive_udp_message_and_set_up_clock_sync(&socket_id, (uint16_t)fed_id)) {
+
+      // Create a thread to communicate with the federate.
+      // This has to be done after clock synchronization is finished
+      // or that thread may end up attempting to handle incoming clock
+      // synchronization messages.
+      federate_info_t* fed = GET_FED_INFO(fed_id);
+      lf_thread_create(&(fed->thread_id), reconnected_federate_info_thread_TCP, fed);
+    } else {
+      // Received message was rejected. Try again.
+      i--;
+    }
+  }
+  // All federates have reconnected.
+  LF_PRINT_DEBUG("All federates have reconnected to RTI.");
+
+  //fix number_of_scheduling_nodes
+  rti_remote->base.number_of_scheduling_nodes = rti_remote->base.number_of_scheduling_nodes + rti_remote->base.number_of_reconnect_nodes;
+
+  if (rti_remote->clock_sync_global_status >= clock_sync_on) {
+    // Create the thread that performs periodic PTP clock synchronization sessions
+    // over the UDP channel, but only if the UDP channel is open and at least one
+    // federate is performing runtime clock synchronization.
+    bool clock_sync_enabled = false;
+    for (int i = 0; i < rti_remote->base.number_of_scheduling_nodes; i++) {
+      federate_info_t* fed_info = GET_FED_INFO(i);
+      if (fed_info->clock_synchronization_enabled) {
+        clock_sync_enabled = true;
+        break;
+      }
+    }
+    if (rti_remote->final_port_UDP != UINT16_MAX && clock_sync_enabled) {
+      lf_thread_create(&rti_remote->clock_thread, clock_synchronization_thread, NULL);
+    }
+  }
+}
+
 void* respond_to_erroneous_connections(void* nothing) {
   initialize_lf_thread_id();
   while (true) {
@@ -1673,8 +1922,8 @@ void wait_for_federates(int socket_descriptor) {
   // have joined.
   // In case some other federation's federates are trying to join the wrong
   // federation, need to respond. Start a separate thread to do that.
-  lf_thread_t responder_thread;
-  lf_thread_create(&responder_thread, respond_to_erroneous_connections, NULL);
+  //lf_thread_t responder_thread;
+  //lf_thread_create(&responder_thread, respond_to_erroneous_connections, NULL);
 
   // Wait for federate threads to exit.
   void* thread_exit_status;
@@ -1736,6 +1985,11 @@ void initialize_RTI(rti_remote_t* rti) {
   rti_remote->authentication_enabled = false;
   rti_remote->base.tracing_enabled = false;
   rti_remote->stop_in_progress = false;
+
+  //additional parameters
+  rti_remote->reconnection_validation = false;
+  rti_remote->restart_cycle = 0;
+  rti->max_restart_timestamp = 0;
 }
 
 // The RTI includes clock.c, which requires the following functions that are defined

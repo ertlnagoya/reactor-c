@@ -158,6 +158,23 @@ typedef struct rti_remote_t {
    * Boolean indicating that a stop request is already in progress.
    */
   bool stop_in_progress;
+
+  /**
+   * Boolean Reconnection validation that reconnection is enabled
+   */
+  bool reconnection_validation;
+
+  /**
+   * restart_cycle
+   */
+  int64_t restart_cycle;
+
+  /**
+   * restart_timestamp
+   */
+  int64_t max_restart_timestamp;
+
+
 } rti_remote_t;
 
 /**
