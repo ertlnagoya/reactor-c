@@ -92,6 +92,7 @@ typedef struct rti_common_t {
 
   // Number of terminated federate nodes.
   int32_t number_of_reconnect_nodes;
+  
 } rti_common_t;
 
 typedef struct {

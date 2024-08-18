@@ -897,6 +897,11 @@ void handle_restart_timestamp(federate_info_t* my_fed) {
   lf_tracing_set_start_time(start_time);
   encode_int64(swap_bytes_if_big_endian_int64(start_time), &start_time_buffer[1]);
 
+  //debug
+  for (int i = 0; i < MSG_TYPE_TIMESTAMP_LENGTH; i++) {
+    printf("start_time_buffer[%d] = 0x%02X\n", i, start_time_buffer[i]);
+  }
+
   if (rti_remote->base.tracing_enabled) {
     tag_t tag = {.time = start_time, .microstep = 0};
     tracepoint_rti_to_federate(send_TIMESTAMP, my_fed->enclave.id, &tag);
@@ -1230,7 +1235,8 @@ void* federate_info_thread_TCP(void* fed) {
   if(rti_remote->reconnection_validation) {
     rti_remote->base.number_of_reconnect_nodes++;
     lf_thread_create(&reconnect_thread[reconnect_thread_num], lf_reconnect_to_federates, NULL);
-    reconnect_thread_num++;
+    lf_print("RTI: Reconnect thread regenerated");
+    fflush(stdout);
   }
   return NULL;
 }
@@ -1259,7 +1265,7 @@ void* reconnected_federate_info_thread_TCP(void* fed) {
     LF_PRINT_DEBUG("RTI: Received message type %u from federate %d.", buffer[0], my_fed->enclave.id);
     switch (buffer[0]) {
     case MSG_TYPE_TIMESTAMP:
-      handle_restart_timestamp(my_fed);
+      handle_timestamp(my_fed);
       break;
     case MSG_TYPE_ADDRESS_QUERY:
       handle_address_query(my_fed->enclave.id);
@@ -1309,9 +1315,10 @@ void* reconnected_federate_info_thread_TCP(void* fed) {
   close(my_fed->socket); //  from unistd.h
   LF_MUTEX_UNLOCK(&rti_mutex);
   if(rti_remote->reconnection_validation) {
+    LF_MUTEX_LOCK(&rti_mutex);
     rti_remote->base.number_of_reconnect_nodes++;
+    LF_MUTEX_UNLOCK(&rti_mutex);
     lf_thread_create(&reconnect_thread[reconnect_thread_num], lf_reconnect_to_federates, NULL);
-    reconnect_thread_num++;
   }
   return NULL;
 }
@@ -1780,6 +1787,25 @@ void lf_connect_to_federates(int socket_descriptor) {
 
 void* lf_reconnect_to_federates() {
   lf_print("RTI: Reconnect thread start");
+
+  LF_MUTEX_LOCK(&rti_mutex);
+  int32_t new_number_of_scheduling_nodes;
+  new_number_of_scheduling_nodes = rti_remote->base.number_of_scheduling_nodes + 1;
+  scheduling_node_t** new_scheduling_nodes = (scheduling_node_t**)realloc(rti_remote->base.scheduling_nodes, new_number_of_scheduling_nodes * sizeof(scheduling_node_t*));
+  if (new_scheduling_nodes == NULL) {
+      // reallocが失敗した場合、元のメモリはまだ有効
+      perror("Failed to reallocate memory for scheduling_nodes");
+      exit(EXIT_FAILURE);
+  }
+  rti_remote->base.scheduling_nodes = new_scheduling_nodes;
+  for (uint16_t i = rti_remote->base.number_of_scheduling_nodes; i < new_number_of_scheduling_nodes; i++) {
+      federate_info_t* fed_info = (federate_info_t*)calloc(1, sizeof(federate_info_t));
+      initialize_federate(fed_info, i);
+      rti_remote->base.scheduling_nodes[i] = (scheduling_node_t*)fed_info;
+  }
+  rti_remote->base.number_of_scheduling_nodes = new_number_of_scheduling_nodes;
+  LF_MUTEX_UNLOCK(&rti_mutex);
+  
   for (int i = 0; i < rti_remote->base.number_of_reconnect_nodes; i++) {
     // Wait for an incoming connection request.
     struct sockaddr client_fd;
@@ -1834,9 +1860,6 @@ void* lf_reconnect_to_federates() {
   }
   // All federates have reconnected.
   LF_PRINT_DEBUG("All federates have reconnected to RTI.");
-
-  //fix number_of_scheduling_nodes
-  rti_remote->base.number_of_scheduling_nodes = rti_remote->base.number_of_scheduling_nodes + rti_remote->base.number_of_reconnect_nodes;
 
   if (rti_remote->clock_sync_global_status >= clock_sync_on) {
     // Create the thread that performs periodic PTP clock synchronization sessions
