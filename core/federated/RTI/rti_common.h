@@ -92,6 +92,9 @@ typedef struct rti_common_t {
 
   // Number of terminated federate nodes.
   int32_t number_of_reconnect_nodes;
+
+  // last start time.
+  int64_t last_start_time;
   
 } rti_common_t;
 

@@ -842,6 +842,7 @@ void handle_timestamp(federate_info_t* my_fed) {
   my_fed->enclave.state = GRANTED;
   lf_cond_broadcast(&sent_start_time);
   LF_PRINT_LOG("RTI sent start time " PRINTF_TIME " to federate %d.", start_time, my_fed->enclave.id);
+  rti_remote->base.last_start_time = start_time;
   LF_MUTEX_UNLOCK(&rti_mutex);
 }
 
@@ -859,19 +860,34 @@ void handle_restart_timestamp(federate_info_t* my_fed) {
   LF_PRINT_DEBUG("RTI received timestamp message with time: " PRINTF_TIME ".", timestamp);
 
   //Calculate restart time
-  int64_t maximum_granted_tag = 0;
+  int64_t maximum_last_granted = 0;
   int64_t restart_timestamp = 0;
+  int64_t physical_elapsed = 0;
+  
+  // last_granted, next_eventに値が代入されていないので別の方法で進行時間済を探索
+  /*
   for(int i=0; i<rti_remote->base.number_of_scheduling_nodes; i++) {
     federate_info_t* fed = GET_FED_INFO(i);
-    maximum_granted_tag = fed->enclave.last_granted.time;
+    printf("RTI: last_granted time is %ld\n", fed->enclave.last_granted.time);
+    if(maximum_last_granted < fed->enclave.last_granted.time) {
+      maximum_last_granted = fed->enclave.last_granted.time;
+    }
   }
-  for(int i=0; restart_timestamp <= maximum_granted_tag; i++) {
-    restart_timestamp = rti_remote->max_start_time + DELAY_START + rti_remote->restart_cycle * i;
+  */
+
+  //RTI側での経過時間を取得することで進行時間を取得．
+  physical_elapsed = lf_time_physical_elapsed();
+
+  printf("RTI: 最新開始時間 %ld, 最新開始からの経過時間 %ld\n", rti_remote->base.last_start_time + DELAY_START, physical_elapsed);
+  for(int i=0; restart_timestamp < (rti_remote->base.last_start_time + physical_elapsed); i++) {
+    restart_timestamp = rti_remote->base.last_start_time + rti_remote->restart_cycle * i;
   }
+
+  printf("RTI: restart time is %ld\n", restart_timestamp);
 
   LF_MUTEX_LOCK(&rti_mutex);
   rti_remote->num_feds_proposed_start++;
-  if (restart_timestamp > rti_remote->max_restart_timestamp) {
+  if (restart_timestamp + DELAY_START > rti_remote->max_restart_timestamp) {
     rti_remote->max_restart_timestamp = restart_timestamp;
   }
   if (rti_remote->num_feds_proposed_start == rti_remote->base.number_of_scheduling_nodes) {
@@ -898,9 +914,11 @@ void handle_restart_timestamp(federate_info_t* my_fed) {
   encode_int64(swap_bytes_if_big_endian_int64(start_time), &start_time_buffer[1]);
 
   //debug
+  /*
   for (int i = 0; i < MSG_TYPE_TIMESTAMP_LENGTH; i++) {
     printf("start_time_buffer[%d] = 0x%02X\n", i, start_time_buffer[i]);
   }
+  */
 
   if (rti_remote->base.tracing_enabled) {
     tag_t tag = {.time = start_time, .microstep = 0};
@@ -917,6 +935,7 @@ void handle_restart_timestamp(federate_info_t* my_fed) {
   my_fed->enclave.state = GRANTED;
   lf_cond_broadcast(&sent_start_time);
   LF_PRINT_LOG("RTI sent start time " PRINTF_TIME " to federate %d.", start_time, my_fed->enclave.id);
+  rti_remote->base.last_start_time = start_time;
   LF_MUTEX_UNLOCK(&rti_mutex);
 }
 
@@ -1265,7 +1284,8 @@ void* reconnected_federate_info_thread_TCP(void* fed) {
     LF_PRINT_DEBUG("RTI: Received message type %u from federate %d.", buffer[0], my_fed->enclave.id);
     switch (buffer[0]) {
     case MSG_TYPE_TIMESTAMP:
-      handle_timestamp(my_fed);
+      handle_restart_timestamp(my_fed);
+      //handle_timestamp(my_fed);
       break;
     case MSG_TYPE_ADDRESS_QUERY:
       handle_address_query(my_fed->enclave.id);
@@ -1786,7 +1806,7 @@ void lf_connect_to_federates(int socket_descriptor) {
 }
 
 void* lf_reconnect_to_federates() {
-  lf_print("RTI: Reconnect thread start");
+  printf("RTI: Reconnect thread start\n");
 
   LF_MUTEX_LOCK(&rti_mutex);
   int32_t new_number_of_scheduling_nodes;

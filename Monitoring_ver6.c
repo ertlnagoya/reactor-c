@@ -102,10 +102,11 @@ void* restartProgram(void *arg) {
                 printf("Monitoring: file closed\n");
             }
         }
-
+        /*
         if(i == RTI_federate_nodes) {
             i = 0;
-        } 
+        }
+        */
     }
 }
 
@@ -222,9 +223,9 @@ void p_info_write(process_info *p_info) {
     }
 
     //コマンドを格納
-    strcpy(p_info[0].command, "taskset -c 1 RTI -n 2 -r 3000000 & echo $! > /home/yoshinoriterazawa/LF/RTI.txt");
-    strcpy(p_info[1].command, "taskset -c 0,2 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__writer & echo $! > /home/yoshinoriterazawa/LF/federate_writer.txt");
-    strcpy(p_info[2].command, "taskset -c 3 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__m_writer & echo $! > /home/yoshinoriterazawa/LF/federate_m_writer.txt");
+    strcpy(p_info[0].command, "taskset -c 0 RTI -n 2 -r 3000000000 & echo $! > /home/yoshinoriterazawa/LF/RTI.txt");
+    strcpy(p_info[1].command, "taskset -c 1 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__writer & echo $! > /home/yoshinoriterazawa/LF/federate_writer.txt");
+    strcpy(p_info[2].command, "taskset -c 2 /home/yoshinoriterazawa/LF/fed-gen/filewrite/bin/federate__m_writer & echo $! > /home/yoshinoriterazawa/LF/federate_m_writer.txt");
     //通信用ファイルのパスを格納
     strcpy(p_info[0].file_path, "/home/yoshinoriterazawa/LF/RTI.txt");
     strcpy(p_info[1].file_path, "/home/yoshinoriterazawa/LF/federate_writer.txt");
@@ -232,26 +233,28 @@ void p_info_write(process_info *p_info) {
 
     //実行シーケンスの最初のCPを設定
     p_info[1].cp_array[0]->start_cp = true;
-    p_info[1].cp_array[4]->start_cp = true;
+    //p_info[1].cp_array[4]->start_cp = true;
+
     p_info[2].cp_array[0]->start_cp = true;
     
 
     //end_cp_num（最後のCP番号）を格納（とりあえずfederateのみ）
     p_info[1].cp_array[3]->end_cp = true;
-    p_info[1].cp_array[7]->end_cp = true;
+    //p_info[1].cp_array[7]->end_cp = true;
+
     p_info[2].cp_array[3]->end_cp = true;
 
     //デッドラインを格納（とりあえずfederateのみ）
     p_info[1].deadline[0] = 1010;
     p_info[1].deadline[1] = 100;
     p_info[1].deadline[2] = 1010;
-    p_info[1].deadline[4] = 1010;
-    p_info[1].deadline[5] = 100;
-    p_info[1].deadline[6] = 1010;
+    //p_info[1].deadline[4] = 1010;
+    //p_info[1].deadline[5] = 100;
+    //p_info[1].deadline[6] = 1010;
 
-    p_info[2].deadline[0] = 1010;
+    p_info[2].deadline[0] = 500;
     p_info[2].deadline[1] = 100;
-    p_info[2].deadline[2] = 100;
+    p_info[2].deadline[2] = 1010;
 }
 
 /*
