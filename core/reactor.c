@@ -268,6 +268,16 @@ int next(environment_t* env) {
   // Invode initialization of master scheduler
   ms_init(NULL);
 
+  // Register a worker thread
+  ms_worker_info_t wi = {
+    .worker_id = 0,
+    .os_pid = (int)getpid(),
+    .os_tid = _ms_gettid(),
+    .name = "main",
+    .flags = 0
+  };
+  ms_register_worker(&wi);
+
   // Invoke code that must execute before starting a new logical time round,
   // such as initializing outputs to be absent.
   _lf_start_time_step(env);

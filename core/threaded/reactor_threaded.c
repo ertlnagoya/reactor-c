@@ -854,6 +854,27 @@ static void* worker(void* arg) {
 
   int worker_number = env->worker_thread_count++;
   LF_PRINT_LOG("Env %u: Worker thread %d started.", env->id, worker_number);
+<<<<<<< Updated upstream
+=======
+
+  // ---- Master Scheduler Phase 0.5: worker registration ----
+  ms_worker_info_t wi;
+  memset(&wi, 0, sizeof(wi));
+  wi.worker_id = worker_number;
+  wi.os_pid = (int)getpid();
+
+  // OS thread id (Linux). If you already have a helper, use that.
+  #ifdef __linux__
+  #include <sys/syscall.h>
+  wi.os_tid = (int)syscall(SYS_gettid);
+  #else
+  wi.os_tid = 0;
+  #endif
+
+  wi.name = "lf-worker";
+  wi.flags = 0;
+  ms_register_worker(&wi);
+>>>>>>> Stashed changes
   
   // Release mutex and start working.
   LF_MUTEX_UNLOCK(&env->mutex);

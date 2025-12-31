@@ -8,6 +8,9 @@
 #include <pthread.h>
 #include <stdarg.h>
 
+#include <sys/syscall.h>
+#include <sys/types.h>
+
 // ---------------- Internal state ----------------
 
 static pthread_mutex_t _ms_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -190,4 +193,8 @@ void ms_report(const ms_report_t* report) {
            (long long)report->lag_ns,
            (int)report->ready_q_len,
            (long long)report->deadline_misses);
+}
+
+static int _ms_gettid(void) {
+  return (int)syscall(SYS_gettid);
 }
