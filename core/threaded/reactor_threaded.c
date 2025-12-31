@@ -854,8 +854,6 @@ static void* worker(void* arg) {
 
   int worker_number = env->worker_thread_count++;
   LF_PRINT_LOG("Env %u: Worker thread %d started.", env->id, worker_number);
-<<<<<<< Updated upstream
-=======
 
   // ---- Master Scheduler Phase 0.5: worker registration ----
   ms_worker_info_t wi;
@@ -874,7 +872,6 @@ static void* worker(void* arg) {
   wi.name = "lf-worker";
   wi.flags = 0;
   ms_register_worker(&wi);
->>>>>>> Stashed changes
   
   // Release mutex and start working.
   LF_MUTEX_UNLOCK(&env->mutex);
