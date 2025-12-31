@@ -42,3 +42,6 @@ add_subdirectory(${Lib})
 add_subdirectory(${CoreLibPath})
 
 include(test/Tests.cmake)
+
+add_executable(ms_phase0_smoke tools/ms_phase0_smoke/ms_phase0_smoke.c)
+target_link_libraries(ms_phase0_smoke PRIVATE reactor-c)

@@ -26,6 +26,7 @@
 #include "rti_local.h"
 #include "reactor_common.h"
 #include "watchdog.h"
+#include "master_scheduler.h"
 
 #ifdef FEDERATED
 #include "federate.h"
@@ -385,6 +386,9 @@ void _lf_next_locked(environment_t* env) {
   if (lf_tag_compare(env->current_tag, next_tag) < 0 || lf_tag_compare(next_tag, start_tag) > 0) {
     _lf_advance_tag(env, next_tag);
   }
+
+  // Invode initialization of master scheduler
+  ms_init(NULL);
 
   _lf_start_time_step(env);
 
@@ -1129,6 +1133,9 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
     LF_PRINT_LOG("---- All environment worker threads exited successfully.");
   }
   _lf_normal_termination = true;
+
+  // Invode shutdown of master scheduler
+  ms_shutdown();
   return ret;
 }
 

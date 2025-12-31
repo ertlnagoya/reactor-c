@@ -17,6 +17,7 @@
 #include "low_level_platform.h"
 #include "reactor_common.h"
 #include "environment.h"
+#include "master_scheduler.h"
 
 // Embedded platforms with no command line interface shouldnt have signals
 #if !defined(NO_CLI)
@@ -264,6 +265,9 @@ int next(environment_t* env) {
     _lf_trigger_shutdown_reactions(env);
   }
 
+  // Invode initialization of master scheduler
+  ms_init(NULL);
+
   // Invoke code that must execute before starting a new logical time round,
   // such as initializing outputs to be absent.
   _lf_start_time_step(env);
@@ -358,8 +362,12 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
         ;
     }
     _lf_normal_termination = true;
+    // Invode shutdown of master scheduler
+    ms_shutdown();
     return 0;
   } else {
+    // Invode shutdown of master scheduler
+    ms_shutdown();
     return -1;
   }
 }
