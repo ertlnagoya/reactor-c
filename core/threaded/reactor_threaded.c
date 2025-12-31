@@ -387,9 +387,6 @@ void _lf_next_locked(environment_t* env) {
     _lf_advance_tag(env, next_tag);
   }
 
-  // Invode initialization of master scheduler
-  ms_init(NULL);
-
   _lf_start_time_step(env);
 
   if (lf_tag_compare(env->current_tag, env->stop_tag) >= 0) {
@@ -857,7 +854,7 @@ static void* worker(void* arg) {
 
   int worker_number = env->worker_thread_count++;
   LF_PRINT_LOG("Env %u: Worker thread %d started.", env->id, worker_number);
-
+  
   // Release mutex and start working.
   LF_MUTEX_UNLOCK(&env->mutex);
   _lf_worker_do_work(env, worker_number);
@@ -1030,6 +1027,12 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   if (atexit(termination) != 0) {
     lf_print_warning("Failed to register termination function!");
   }
+
+  // Ensure MS shutdown runs on exit(), including user-code exit(0).
+  if (atexit(ms_shutdown) != 0) {
+    lf_print_warning("Failed to register ms_shutdown with atexit!");
+  }
+
   // The above handles only "normal" termination (via a call to exit).
   // As a consequence, we need to also trap ctrl-C, which issues a SIGINT,
   // and cause it to call exit.
@@ -1081,6 +1084,9 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
 
   environment_t* envs;
   int num_envs = _lf_get_environments(&envs);
+
+  // Invode initialization of master scheduler
+  ms_init(NULL);
 
 #if defined LF_ENCLAVES
   initialize_local_rti(envs, num_envs);
@@ -1134,8 +1140,6 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   }
   _lf_normal_termination = true;
 
-  // Invode shutdown of master scheduler
-  ms_shutdown();
   return ret;
 }
 
