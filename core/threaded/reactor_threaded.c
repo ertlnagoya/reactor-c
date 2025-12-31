@@ -15,6 +15,9 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "lf_types.h"
 #include "low_level_platform.h"
@@ -776,12 +779,39 @@ static bool _lf_worker_handle_violations(environment_t* env, int worker_number, 
  * @param reaction The reaction to invoke.
  */
 static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, reaction_t* reaction) {
+  // ---- Phase 0.5: observability report (before executing reaction) ----
+  {
+    ms_report_t rep;
+    memset(&rep, 0, sizeof(rep));
+
+    rep.worker_id = worker_number;
+
+    // env->current_tag.time is "logical time" for the current step
+    rep.logical_time_ns = (int64_t)env->current_tag.time;
+
+    // physical time "now"
+    rep.physical_time_ns = (int64_t)lf_time_physical();
+
+    rep.lag_ns = rep.physical_time_ns - rep.logical_time_ns;
+
+    // Phase0.5: if you can't map IDs yet, keep -1
+    rep.reactor_id = -1;
+    rep.reaction_id = (reaction != NULL) ? reaction->number : -1;
+
+    // Optional metrics (Phase0.5: unknown -> -1)
+    rep.ready_q_len = -1;
+    rep.deadline_misses = 0;
+
+    ms_report(&rep);
+  }
+  // -------------------------------------------------------------------
+
   LF_PRINT_LOG("Env %u: Worker %d: Invoking reaction %s at elapsed tag " PRINTF_TAG ".", env->id, worker_number,
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
+
   _lf_invoke_reaction(env, reaction, worker_number);
 
-  // If the reaction produced outputs, put the resulting triggered
-  // reactions into the queue or execute them immediately.
+  // If the reaction produced outputs, schedule triggered reactions
   schedule_output_reactions(env, reaction, worker_number);
 
   reaction->is_STP_violated = false;
@@ -856,23 +886,20 @@ static void* worker(void* arg) {
   LF_PRINT_LOG("Env %u: Worker thread %d started.", env->id, worker_number);
 
   // ---- Master Scheduler Phase 0.5: worker registration ----
-  ms_worker_info_t wi;
-  memset(&wi, 0, sizeof(wi));
-  wi.worker_id = worker_number;
-  wi.os_pid = (int)getpid();
+  ms_worker_info_t info;
+  memset(&info, 0, sizeof(info));
 
-  // OS thread id (Linux). If you already have a helper, use that.
-  #ifdef __linux__
-  #include <sys/syscall.h>
-  wi.os_tid = (int)syscall(SYS_gettid);
-  #else
-  wi.os_tid = 0;
-  #endif
+  info.worker_id = worker_number;
+  info.os_pid = (int)getpid();
+  info.os_tid = _lf_get_os_tid();
 
-  wi.name = "lf-worker";
-  wi.flags = 0;
-  ms_register_worker(&wi);
-  
+  static __thread char namebuf[64];
+  snprintf(namebuf, sizeof(namebuf), "env%u-worker%d", env->id, worker_number);
+  info.name = namebuf;
+
+  info.flags = 0;
+  ms_register_worker(&info);
+
   // Release mutex and start working.
   LF_MUTEX_UNLOCK(&env->mutex);
   _lf_worker_do_work(env, worker_number);
@@ -1181,4 +1208,14 @@ int lf_critical_section_exit(environment_t* env) {
     return lf_mutex_unlock(&env->mutex);
   }
 }
+
+static int _lf_get_os_tid(void) {
+#ifdef SYS_gettid
+  return (int)syscall(SYS_gettid);
+#else
+  // fallback
+  return (int)(uintptr_t)pthread_self();
+#endif
+}
+
 #endif

@@ -183,7 +183,7 @@ void ms_report(const ms_report_t* report) {
   }
   _ms_last_report_mono_ns = now;
 
-  _ms_logf(MS_LEVEL_DEBUG,
+  _ms_logf(MS_LEVEL_INFO,
            "event=report worker_id=%d reactor_id=%d reaction_id=%d logical=%lld physical=%lld lag=%lld ready_q=%d miss=%lld",
            (int)report->worker_id,
            (int)report->reactor_id,
