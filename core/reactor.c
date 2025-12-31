@@ -266,8 +266,8 @@ int next(environment_t* env) {
   }
 
   // Invode initialization of master scheduler
-  int rc = ms_init(NULL);
-  if (rc != 0) {
+  bool rc = ms_init(NULL);
+  if (rc != true) {
     lf_print_warning("ms_init failed: %d (master scheduler disabled?)", rc);
   }
 

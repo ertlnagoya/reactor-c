@@ -1149,8 +1149,8 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   int num_envs = _lf_get_environments(&envs);
 
   // Invode initialization of master scheduler
-  int rc = ms_init(NULL);
-  if (rc != 0) {
+  bool rc = ms_init(NULL);
+  if (rc != true) {
     lf_print_warning("ms_init failed: %d (master scheduler disabled?)", rc);
   }
 
