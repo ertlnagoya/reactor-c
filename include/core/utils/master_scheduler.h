@@ -59,6 +59,7 @@ void ms_shutdown(void);
 
 void ms_set_log_level(ms_log_level_t level);
 void ms_set_enabled(bool enabled);
+int ms_gettid(void);
 
 #ifdef __cplusplus
 }

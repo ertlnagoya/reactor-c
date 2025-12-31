@@ -195,6 +195,11 @@ void ms_report(const ms_report_t* report) {
            (long long)report->deadline_misses);
 }
 
-static int _ms_gettid(void) {
+static int ms_gettid(void) {
+#ifdef SYS_gettid
   return (int)syscall(SYS_gettid);
+#else
+  // fallback
+  return (int)(uintptr_t)pthread_self();
+#endif
 }

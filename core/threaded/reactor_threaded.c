@@ -877,7 +877,7 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
  * get a PTAG to (0,0) and use network control reactions to handle upstream dependencies
  * @param arg Environment within which the worker should execute.
  */
- static int _lf_get_os_tid(void);
+
  static void* worker(void* arg) {
   initialize_lf_thread_id();
   environment_t* env = (environment_t*)arg;
@@ -892,7 +892,7 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 
   info.worker_id = worker_number;
   info.os_pid = (int)getpid();
-  info.os_tid = _lf_get_os_tid();
+  info.os_tid = ms_gettid();
 
   static __thread char namebuf[64];
   snprintf(namebuf, sizeof(namebuf), "env%u-worker%d", env->id, worker_number);
@@ -1208,15 +1208,6 @@ int lf_critical_section_exit(environment_t* env) {
   } else {
     return lf_mutex_unlock(&env->mutex);
   }
-}
-
-static int _lf_get_os_tid(void) {
-#ifdef SYS_gettid
-  return (int)syscall(SYS_gettid);
-#else
-  // fallback
-  return (int)(uintptr_t)pthread_self();
-#endif
 }
 
 #endif
