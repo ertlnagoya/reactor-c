@@ -877,7 +877,8 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
  * get a PTAG to (0,0) and use network control reactions to handle upstream dependencies
  * @param arg Environment within which the worker should execute.
  */
-static void* worker(void* arg) {
+ static int _lf_get_os_tid(void);
+ static void* worker(void* arg) {
   initialize_lf_thread_id();
   environment_t* env = (environment_t*)arg;
   LF_MUTEX_LOCK(&env->mutex);
