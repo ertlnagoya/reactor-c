@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>   // getenv, atoi
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -768,6 +769,22 @@ static bool _lf_worker_handle_violations(environment_t* env, int worker_number, 
   return violation;
 }
 
+// ---- Phase 0.5: report rate limit ----
+// Report once every N reactions per worker thread.
+// N is configurable with LF_MS_REPORT_EVERY (default: 1).
+static inline bool _ms_should_report(void) {
+  static int report_every = -1; // init once, process-wide
+  if (report_every < 0) {
+    const char* s = getenv("LF_MS_REPORT_EVERY");
+    int v = (s != NULL) ? atoi(s) : 1;
+    report_every = (v > 0) ? v : 1;
+  }
+
+  static __thread uint32_t counter = 0;
+  counter++;
+  return (report_every == 1) || (counter % (uint32_t)report_every == 0);
+}
+
 /**
  * Invoke 'reaction' and schedule any resulting triggered reaction(s) on the
  * reaction queue.
@@ -780,7 +797,7 @@ static bool _lf_worker_handle_violations(environment_t* env, int worker_number, 
  */
 static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, reaction_t* reaction) {
   // ---- Phase 0.5: observability report (before executing reaction) ----
-  {
+  if (_ms_should_report()) {
     ms_report_t rep;
     memset(&rep, 0, sizeof(rep));
 
@@ -1132,7 +1149,10 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   int num_envs = _lf_get_environments(&envs);
 
   // Invode initialization of master scheduler
-  ms_init(NULL);
+  int rc = ms_init(NULL);
+  if (rc != 0) {
+    lf_print_warning("ms_init failed: %d (master scheduler disabled?)", rc);
+  }
 
 #if defined LF_ENCLAVES
   initialize_local_rti(envs, num_envs);

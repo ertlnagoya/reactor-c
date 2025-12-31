@@ -266,7 +266,10 @@ int next(environment_t* env) {
   }
 
   // Invode initialization of master scheduler
-  ms_init(NULL);
+  int rc = ms_init(NULL);
+  if (rc != 0) {
+    lf_print_warning("ms_init failed: %d (master scheduler disabled?)", rc);
+  }
 
   // Register a worker thread
   ms_worker_info_t wi = {
