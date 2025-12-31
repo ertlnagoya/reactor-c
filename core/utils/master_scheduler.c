@@ -1,7 +1,7 @@
 #include "master_scheduler.h"
 
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdlib.h>   // atexit
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -14,6 +14,11 @@ static pthread_mutex_t _ms_lock = PTHREAD_MUTEX_INITIALIZER;
 static FILE* _ms_log = NULL;
 static bool _ms_enabled = true;
 static ms_log_level_t _ms_level = MS_LEVEL_INFO;
+
+// Ensure shutdown runs even if the LF program calls exit(0).
+static bool _ms_atexit_registered = false;
+// Prevent double shutdown (e.g., runtime hook + atexit).
+static bool _ms_shutdown_called = false;
 
 // Rate limit for ms_report() (default: 100ms)
 static int64_t _ms_report_min_interval_ns = 100LL * 1000LL * 1000LL;
@@ -37,7 +42,10 @@ static const char* _ms_level_str(ms_log_level_t lvl) {
 
 static int _ms_is_true(const char* s) {
   if (s == NULL) return 0;
-  return (strcmp(s, "1") == 0 || strcasecmp(s, "true") == 0 || strcasecmp(s, "yes") == 0 || strcasecmp(s, "on") == 0);
+  return (strcmp(s, "1") == 0 ||
+          strcasecmp(s, "true") == 0 ||
+          strcasecmp(s, "yes") == 0 ||
+          strcasecmp(s, "on") == 0);
 }
 
 static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
@@ -65,10 +73,23 @@ static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
   pthread_mutex_unlock(&_ms_lock);
 }
 
+// atexit() handler must be a function with signature void(void).
+static void _ms_shutdown_atexit(void) {
+  ms_shutdown();
+}
+
 // ---------------- Public API ----------------
 
 bool ms_init(const char* config_path) {
   (void)config_path; // Unused in Phase 0.
+
+  // Register shutdown at process exit so it runs even if generated code calls exit(0).
+  pthread_mutex_lock(&_ms_lock);
+  if (!_ms_atexit_registered) {
+    atexit(_ms_shutdown_atexit);
+    _ms_atexit_registered = true;
+  }
+  pthread_mutex_unlock(&_ms_lock);
 
   // Allow hard disable via env var for near-zero overhead.
   if (_ms_is_true(getenv("LF_MS_DISABLE"))) {
@@ -105,12 +126,21 @@ bool ms_init(const char* config_path) {
 
 void ms_shutdown(void) {
   pthread_mutex_lock(&_ms_lock);
+
+  // Avoid double shutdown (runtime hook + atexit, etc.)
+  if (_ms_shutdown_called) {
+    pthread_mutex_unlock(&_ms_lock);
+    return;
+  }
+  _ms_shutdown_called = true;
+
   if (_ms_log != NULL) {
     fprintf(_ms_log, "# phase0 master_scheduler shutdown pid=%d\n", (int)getpid());
     fflush(_ms_log);
     fclose(_ms_log);
     _ms_log = NULL;
   }
+
   pthread_mutex_unlock(&_ms_lock);
 }
 
@@ -144,7 +174,8 @@ void ms_report(const ms_report_t* report) {
 
   // Rate limit to avoid perturbing runtime.
   const int64_t now = _ms_now_mono_ns();
-  if (_ms_report_min_interval_ns > 0 && (now - _ms_last_report_mono_ns) < _ms_report_min_interval_ns) {
+  if (_ms_report_min_interval_ns > 0 &&
+      (now - _ms_last_report_mono_ns) < _ms_report_min_interval_ns) {
     return;
   }
   _ms_last_report_mono_ns = now;
