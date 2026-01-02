@@ -25,7 +25,9 @@ static bool _ms_shutdown_called = false;
 
 // Rate limit for ms_report() (default: 100ms)
 static int64_t _ms_report_min_interval_ns = 100LL * 1000LL * 1000LL;
-static int64_t _ms_last_report_mono_ns = 0;
+
+#define MS_MAX_WORKERS 256
+static int64_t _ms_last_report_mono_ns[MS_MAX_WORKERS] = {0};
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -175,14 +177,20 @@ void ms_register_worker(const ms_worker_info_t* info) {
 void ms_report(const ms_report_t* report) {
   if (report == NULL) return;
 
-  // Rate limit to avoid perturbing runtime.
+  // Rate limit to avoid perturbing runtime for each worker.
   const int64_t now = _ms_now_mono_ns();
+
+  int wid = report->worker_id;
+  if (wid < 0 || wid >= MS_MAX_WORKERS) {
+    wid = 0; // fallback
+  }
+
   if (_ms_report_min_interval_ns > 0 &&
-      (now - _ms_last_report_mono_ns) < _ms_report_min_interval_ns) {
+      (now - _ms_last_report_mono_ns[wid]) < _ms_report_min_interval_ns) {
     return;
   }
-  _ms_last_report_mono_ns = now;
-
+  _ms_last_report_mono_ns[wid] = now;
+  
   _ms_logf(MS_LEVEL_INFO,
            "event=report worker_id=%d reactor_id=%d reaction_id=%d logical=%lld physical=%lld lag=%lld ready_q=%d miss=%lld",
            (int)report->worker_id,
