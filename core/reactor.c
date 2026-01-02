@@ -137,6 +137,20 @@ int _lf_do_step(environment_t* env) {
     reaction_t* reaction = (reaction_t*)pqueue_pop(env->reaction_q);
     reaction->status = running;
 
+    // ---- Phase 0.5: observability report (single-threaded) ----
+    ms_report_t rep;
+    memset(&rep, 0, sizeof(rep));
+    rep.worker_id = 0;
+    rep.logical_time_ns  = (int64_t)env->current_tag.time;
+    rep.physical_time_ns = (int64_t)lf_time_physical();
+    rep.lag_ns = rep.physical_time_ns - rep.logical_time_ns;
+    rep.reactor_id = -1;
+    rep.reaction_id = (reaction != NULL) ? reaction->number : -1;
+    rep.ready_q_len = (int)pqueue_size(env->reaction_q);
+    rep.deadline_misses = 0;
+    ms_report(&rep);
+    // -----------------------------------------------------------
+
     LF_PRINT_LOG("Invoking reaction %s at elapsed logical tag " PRINTF_TAG ".", reaction->name,
                  env->current_tag.time - start_time, env->current_tag.microstep);
 
