@@ -265,22 +265,6 @@ int next(environment_t* env) {
     _lf_trigger_shutdown_reactions(env);
   }
 
-  // Invode initialization of master scheduler
-  bool rc = ms_init(NULL);
-  if (rc != true) {
-    lf_print_warning("ms_init failed: %d (master scheduler disabled?)", rc);
-  }
-
-  // Register a worker thread
-  ms_worker_info_t wi = {
-    .worker_id = 0,
-    .os_pid = (int)getpid(),
-    .os_tid = _ms_gettid(),
-    .name = "main",
-    .flags = 0
-  };
-  ms_register_worker(&wi);
-
   // Invoke code that must execute before starting a new logical time round,
   // such as initializing outputs to be absent.
   _lf_start_time_step(env);
@@ -336,6 +320,21 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
 #ifndef NO_CLI
     signal(SIGINT, exit);
 #endif
+    // ---- Master Scheduler: init + single-thread "worker" register (once) ----
+    bool rc = ms_init(NULL);
+    if (rc != true) {
+      lf_print_warning("ms_init failed (master scheduler disabled?)");
+    }
+
+    ms_worker_info_t wi = {
+      .worker_id = 0,
+      .os_pid = (int)getpid(),
+      .os_tid = ms_gettid(),
+      .name = "main",
+      .flags = 0
+    };
+    ms_register_worker(&wi);
+
     // Create and initialize the environment
     lf_create_environments(); // code-generated function
     environment_t* env;
