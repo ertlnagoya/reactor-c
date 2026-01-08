@@ -101,6 +101,15 @@ bool ms_init(const char* config_path) {
     pthread_mutex_lock(&_ms_lock);
     _ms_enabled = false;
     pthread_mutex_unlock(&_ms_lock);
+
+    const char* lv = getenv("LF_MS_LOG_LEVEL");
+    if (lv != NULL) {
+        if (strcasecmp(lv, "DEBUG") == 0) ms_set_log_level(MS_LEVEL_DEBUG);
+        else if (strcasecmp(lv, "INFO") == 0) ms_set_log_level(MS_LEVEL_INFO);
+        else if (strcasecmp(lv, "WARN") == 0) ms_set_log_level(MS_LEVEL_WARN);
+        else if (strcasecmp(lv, "ERROR") == 0) ms_set_log_level(MS_LEVEL_ERROR);
+    }
+
     return true;
   }
 
@@ -123,7 +132,7 @@ bool ms_init(const char* config_path) {
     return true;
   }
 
-  fprintf(_ms_log, "# phase0 master_scheduler started pid=%d\n", (int)getpid());
+  fprintf(_ms_log, "# phase1 master_scheduler started pid=%d\n", (int)getpid());
   fflush(_ms_log);
   pthread_mutex_unlock(&_ms_lock);
   return true;
@@ -140,7 +149,7 @@ void ms_shutdown(void) {
   _ms_shutdown_called = true;
 
   if (_ms_log != NULL) {
-    fprintf(_ms_log, "# phase0 master_scheduler shutdown pid=%d\n", (int)getpid());
+    fprintf(_ms_log, "# phase1 master_scheduler shutdown pid=%d\n", (int)getpid());
     fflush(_ms_log);
     fclose(_ms_log);
     _ms_log = NULL;
