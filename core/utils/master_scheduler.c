@@ -93,8 +93,9 @@ bool ms_init(const char* config_path) {
     if (strcasecmp(lv, "DEBUG") == 0) ms_set_log_level(MS_LEVEL_DEBUG);
     else if (strcasecmp(lv, "INFO") == 0) ms_set_log_level(MS_LEVEL_INFO);
     else if (strcasecmp(lv, "WARN") == 0) ms_set_log_level(MS_LEVEL_WARN);
-    else if (strcasecmp(lv, "ERROR") == 0) ms_set_log_level(MS_LEVEL_ERROR);
+    else if (strcasecmp(lv, "ERROR") == 0) ms_set_log_level(MS_LEVEL_ERROR);    
   }
+  _ms_logf(MS_LEVEL_INFO, "event=ms_init level=%s", _ms_level_str(_ms_level));
 
   // Register shutdown at process exit so it runs even if generated code calls exit(0).
   pthread_mutex_lock(&_ms_lock);
@@ -241,8 +242,6 @@ int ms_pick_next(
     long long logical_time_ns
 ) {
     (void)env_id;
-    (void)worker_id;
-    (void)logical_time_ns;
 
     // Phase 1: no intervention
     // Returning -1 means "follow the existing scheduler"
