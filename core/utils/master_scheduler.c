@@ -88,6 +88,14 @@ static void _ms_shutdown_atexit(void) {
 bool ms_init(const char* config_path) {
   (void)config_path; // Unused in Phase 0.
 
+  const char* lv = getenv("LF_MS_LOG_LEVEL");
+  if (lv != NULL) {
+    if (strcasecmp(lv, "DEBUG") == 0) ms_set_log_level(MS_LEVEL_DEBUG);
+    else if (strcasecmp(lv, "INFO") == 0) ms_set_log_level(MS_LEVEL_INFO);
+    else if (strcasecmp(lv, "WARN") == 0) ms_set_log_level(MS_LEVEL_WARN);
+    else if (strcasecmp(lv, "ERROR") == 0) ms_set_log_level(MS_LEVEL_ERROR);
+  }
+
   // Register shutdown at process exit so it runs even if generated code calls exit(0).
   pthread_mutex_lock(&_ms_lock);
   if (!_ms_atexit_registered) {
@@ -101,15 +109,6 @@ bool ms_init(const char* config_path) {
     pthread_mutex_lock(&_ms_lock);
     _ms_enabled = false;
     pthread_mutex_unlock(&_ms_lock);
-
-    const char* lv = getenv("LF_MS_LOG_LEVEL");
-    if (lv != NULL) {
-        if (strcasecmp(lv, "DEBUG") == 0) ms_set_log_level(MS_LEVEL_DEBUG);
-        else if (strcasecmp(lv, "INFO") == 0) ms_set_log_level(MS_LEVEL_INFO);
-        else if (strcasecmp(lv, "WARN") == 0) ms_set_log_level(MS_LEVEL_WARN);
-        else if (strcasecmp(lv, "ERROR") == 0) ms_set_log_level(MS_LEVEL_ERROR);
-    }
-
     return true;
   }
 
