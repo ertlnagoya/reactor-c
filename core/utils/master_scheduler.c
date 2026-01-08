@@ -238,6 +238,11 @@ int ms_pick_next(
 
     // Phase 1: no intervention
     // Returning -1 means "follow the existing scheduler"
+    _ms_logf(
+        MS_LEVEL_DEBUG,
+        "event=pick_next worker_id=%d logical=%lld",
+        worker_id, logical_time_ns
+    );
     return -1;
 }
 
