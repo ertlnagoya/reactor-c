@@ -61,6 +61,41 @@ void ms_set_log_level(ms_log_level_t level);
 void ms_set_enabled(bool enabled);
 int ms_gettid(void);
 
+// Phase 1: Notify that a reaction has become ready
+void ms_on_reaction_ready(
+    int env_id,
+    int reaction_id,
+    long long logical_time_ns,
+    long long deadline_ns,
+    int is_input
+);
+
+// Phase 1: Ask the master scheduler which reaction should be executed next
+// Return value:
+//   >= 0 : the scheduler explicitly selects a reaction_id
+//   -1   : no intervention; follow the existing runtime scheduler
+int ms_pick_next(
+    int env_id,
+    int worker_id,
+    long long logical_time_ns
+);
+
+// Phase 1: Notify execution lifecycle (for future control policies)
+void ms_on_reaction_start(
+    int env_id,
+    int worker_id,
+    int reaction_id,
+    long long physical_time_ns
+);
+
+void ms_on_reaction_end(
+    int env_id,
+    int worker_id,
+    int reaction_id,
+    long long physical_time_ns,
+    int status
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -211,3 +211,62 @@ int ms_gettid(void) {
   return (int)(uintptr_t)pthread_self();
 #endif
 }
+
+void ms_on_reaction_ready(    
+    int env_id,
+    int reaction_id,
+    long long logical_time_ns,
+    long long deadline_ns,
+    int is_input
+) {
+    // Phase 1: log only (no control yet)
+    _ms_logf(
+        MS_LEVEL_DEBUG,
+        "event=ready env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d",
+        env_id, reaction_id, logical_time_ns, deadline_ns, is_input
+    );
+}
+
+int ms_pick_next(
+    int env_id,
+    int worker_id,
+    long long logical_time_ns
+) {
+    (void)env_id;
+    (void)worker_id;
+    (void)logical_time_ns;
+
+    // Phase 1: no intervention
+    // Returning -1 means "follow the existing scheduler"
+    return -1;
+}
+
+void ms_on_reaction_start(
+    int env_id,
+    int worker_id,
+    int reaction_id,
+    long long physical_time_ns
+) {
+    (void)env_id;
+    (void)worker_id;
+    (void)reaction_id;
+    (void)physical_time_ns;
+
+    // Phase 1: log only
+}
+
+void ms_on_reaction_end(
+    int env_id,
+    int worker_id,
+    int reaction_id,
+    long long physical_time_ns,
+    int status
+) {
+    (void)env_id;
+    (void)worker_id;
+    (void)reaction_id;
+    (void)physical_time_ns;
+    (void)status;
+
+    // Phase 1: log only
+}

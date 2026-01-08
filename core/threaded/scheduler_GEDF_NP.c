@@ -34,6 +34,7 @@
 #include "scheduler.h"
 #include "tracepoint.h"
 #include "util.h"
+#include "master_scheduler.h"
 
 #ifdef FEDERATED
 #include "federate.h"
@@ -246,6 +247,20 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
     LF_PRINT_DEBUG("Scheduler: Locked mutex for environment.");
   }
   pqueue_insert(scheduler->custom_data->reaction_q, (void*)reaction);
+
+ // ---- Phase 1-A: notify "ready" (log-only) ----
+  // Use scheduler->env, not "env" (which does not exist here).
+  // Keep worker_number so we can attribute readiness to a worker/thread context if desired.
+  ms_on_reaction_ready(
+      scheduler->env->id,
+      worker_number,
+      reaction->number,
+      (long long)scheduler->env->current_tag.time,
+      (long long)reaction->deadline,
+      (int)reaction->is_an_input_reaction);
+
+  // ---------------------------------------------
+
   if (!scheduler->custom_data->solo_holds_mutex) {
     // If this is called from a reaction execution, then the triggered reaction
     // has one level higher than the current level. No need to notify idle threads.

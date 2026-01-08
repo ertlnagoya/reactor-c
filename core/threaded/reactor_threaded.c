@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>   // snprintf
 #include <stdlib.h>   // getenv, atoi
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -826,10 +827,16 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
   LF_PRINT_LOG("Env %u: Worker %d: Invoking reaction %s at elapsed tag " PRINTF_TAG ".", env->id, worker_number,
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
 
+  // Notify execution start
+  ms_on_reaction_start(env->id, worker_number, reaction->number, (long long)lf_time_physical());
+
   _lf_invoke_reaction(env, reaction, worker_number);
 
   // If the reaction produced outputs, schedule triggered reactions
   schedule_output_reactions(env, reaction, worker_number);
+
+  // Notify execution end
+  ms_on_reaction_end(env->id, worker_number, reaction->number, (long long)lf_time_physical(), 0);
 
   reaction->is_STP_violated = false;
 }
@@ -857,7 +864,15 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #ifdef FEDERATED
   lf_stall_advance_level_federation(env, 0);
 #endif
+  // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
+    int pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+    // Phase 1-A: ignore the result for now (log-only path)
+    if (pick >= 0) {
+        // The master scheduler requested a specific reaction,
+        // but Phase 1-A does not enforce it yet.
+    }
+
     // Got a reaction that is ready to run.
     LF_PRINT_DEBUG("Worker %d: Got from scheduler reaction %s: "
                    "level: %lld, is input reaction: %d, and deadline " PRINTF_TIME ".",
