@@ -226,11 +226,11 @@ reaction_t* lf_sched_get_ready_reaction(lf_scheduler_t* scheduler, int worker_nu
   return NULL;
 }
 
-reaction_t* lf_sched_requeue_current_and_pick_by_id(
+reaction_t* lf_sched_requeue_current_and_pick_by_index(
     lf_scheduler_t* scheduler,
     int worker_number,
     reaction_t* current,
-    int reaction_id
+    uint64_t reaction_index
 ) {
   (void)worker_number; // Reserved for future use.
   if (current == NULL) return NULL;
@@ -246,7 +246,7 @@ reaction_t* lf_sched_requeue_current_and_pick_by_id(
   for (size_t i = 1; i < q->size; i++) {
     reaction_t* candidate = (reaction_t*)q->d[i];
     if (candidate == NULL) continue;
-    if (candidate->number == reaction_id &&
+    if ((uint64_t)candidate->index == reaction_index &&
         LF_LEVEL(candidate->index) == scheduler->custom_data->current_level) {
       target = candidate;
       break;
@@ -302,7 +302,7 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
   // Use scheduler->env, not "env" (which does not exist here).
   ms_on_reaction_ready(
       scheduler->env->id,
-      reaction->number,
+      (uint64_t)reaction->index,
       (long long)scheduler->env->current_tag.time,
       (long long)reaction->deadline,
       (int)reaction->is_an_input_reaction);

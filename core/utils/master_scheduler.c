@@ -38,7 +38,7 @@ typedef enum {
 } ms_ready_state_t;
 
 typedef struct {
-  int reaction_id;
+  uint64_t reaction_index;
   int64_t deadline_ns;
   int64_t ready_time_ns;
   int is_input;
@@ -48,7 +48,7 @@ typedef struct {
 typedef struct {
   ms_ready_entry_t entries[MS_MAX_READY_PER_ENV];
   int count;
-  int last_pick_reaction_id;
+  long long last_pick_reaction_index;
 } ms_ready_set_t;
 
 static ms_ready_set_t _ms_ready_sets[MS_MAX_ENVS];
@@ -64,9 +64,9 @@ static ms_ready_set_t* _ms_get_ready_set(int env_id) {
   return &_ms_ready_sets[env_id];
 }
 
-static int _ms_ready_find(ms_ready_set_t* set, int reaction_id) {
+static int _ms_ready_find(ms_ready_set_t* set, uint64_t reaction_index) {
   for (int i = 0; i < set->count; i++) {
-    if (set->entries[i].reaction_id == reaction_id) return i;
+    if (set->entries[i].reaction_index == reaction_index) return i;
   }
   return -1;
 }
@@ -181,7 +181,7 @@ bool ms_init(const char* config_path) {
 
   for (int i = 0; i < MS_MAX_ENVS; i++) {
     _ms_ready_sets[i].count = 0;
-    _ms_ready_sets[i].last_pick_reaction_id = -1;
+    _ms_ready_sets[i].last_pick_reaction_index = -1;
   }
 
   pthread_mutex_unlock(&_ms_lock);
@@ -273,7 +273,7 @@ int ms_gettid(void) {
 
 void ms_on_reaction_ready(    
     int env_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long logical_time_ns,
     long long deadline_ns,
     int is_input
@@ -290,7 +290,7 @@ void ms_on_reaction_ready(
       if (set == NULL) {
         dropped = 1;
       } else {
-        int idx = _ms_ready_find(set, reaction_id);
+        int idx = _ms_ready_find(set, reaction_index);
         if (idx >= 0) {
           ms_ready_entry_t* entry = &set->entries[idx];
           entry->deadline_ns = deadline_ns;
@@ -300,7 +300,7 @@ void ms_on_reaction_ready(
           updated = 1;
         } else if (set->count < MS_MAX_READY_PER_ENV) {
           ms_ready_entry_t* entry = &set->entries[set->count++];
-          entry->reaction_id = reaction_id;
+          entry->reaction_index = reaction_index;
           entry->deadline_ns = deadline_ns;
           entry->ready_time_ns = ready_time;
           entry->is_input = is_input;
@@ -315,20 +315,20 @@ void ms_on_reaction_ready(
     if (dropped) {
       _ms_logf(
           MS_LEVEL_WARN,
-          "event=ready_drop env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d",
-          env_id, reaction_id, logical_time_ns, deadline_ns, is_input
+          "event=ready_drop env=%d reaction_index=%llu logical=%lld deadline=%lld is_input=%d",
+          env_id, (unsigned long long)reaction_index, logical_time_ns, deadline_ns, is_input
       );
       return;
     }
 
     _ms_logf(
         MS_LEVEL_DEBUG,
-        "event=ready env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d updated=%d",
-        env_id, reaction_id, logical_time_ns, deadline_ns, is_input, updated
+        "event=ready env=%d reaction_index=%llu logical=%lld deadline=%lld is_input=%d updated=%d",
+        env_id, (unsigned long long)reaction_index, logical_time_ns, deadline_ns, is_input, updated
     );
 }
 
-int ms_pick_next(
+long long ms_pick_next(
     int env_id,
     int worker_id,
     long long logical_time_ns
@@ -337,7 +337,8 @@ int ms_pick_next(
 
     if (!_ms_enabled) return -1;
 
-    int candidate = -1;
+    uint64_t candidate = 0;
+    int has_candidate = 0;
     int64_t candidate_deadline = 0;
     int64_t candidate_ready = 0;
 
@@ -348,25 +349,27 @@ int ms_pick_next(
         for (int i = 0; i < set->count; i++) {
           const ms_ready_entry_t* entry = &set->entries[i];
           if (entry->state != MS_READY) continue;
-          if (candidate < 0 ||
+          if (!has_candidate ||
               entry->deadline_ns < candidate_deadline ||
               (entry->deadline_ns == candidate_deadline &&
                entry->ready_time_ns < candidate_ready)) {
-            candidate = entry->reaction_id;
+            candidate = entry->reaction_index;
             candidate_deadline = entry->deadline_ns;
             candidate_ready = entry->ready_time_ns;
+            has_candidate = 1;
           }
         }
-        set->last_pick_reaction_id = candidate;
+        set->last_pick_reaction_index = has_candidate ? (long long)candidate : -1;
       }
     }
     pthread_mutex_unlock(&_ms_lock);
 
-    if (candidate >= 0) {
+    if (has_candidate) {
       _ms_logf(
           MS_LEVEL_DEBUG,
-          "event=pick_next env=%d candidate=%d reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
-          env_id, candidate, (long long)candidate_deadline, (long long)candidate_ready, logical_time_ns
+          "event=pick_next env=%d candidate=%llu reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
+          env_id, (unsigned long long)candidate, (long long)candidate_deadline,
+          (long long)candidate_ready, logical_time_ns
       );
     } else {
       _ms_logf(
@@ -384,20 +387,20 @@ int ms_pick_next(
 void ms_on_reaction_start(
     int env_id,
     int worker_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long physical_time_ns
 ) {
     (void)worker_id;
     if (!_ms_enabled) return;
 
     int found = 0;
-    int last_pick = -1;
+    long long last_pick = -1;
     pthread_mutex_lock(&_ms_lock);
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (set != NULL) {
-        last_pick = set->last_pick_reaction_id;
-        int idx = _ms_ready_find(set, reaction_id);
+        last_pick = set->last_pick_reaction_index;
+        int idx = _ms_ready_find(set, reaction_index);
         if (idx >= 0) {
           set->entries[idx].state = MS_RUNNING;
           found = 1;
@@ -408,23 +411,23 @@ void ms_on_reaction_start(
 
     _ms_logf(
         MS_LEVEL_DEBUG,
-        "event=runtime_selected env=%d reaction_id=%d physical=%lld ready_found=%d",
-        env_id, reaction_id, physical_time_ns, found
+        "event=runtime_selected env=%d reaction_index=%llu physical=%lld ready_found=%d",
+        env_id, (unsigned long long)reaction_index, physical_time_ns, found
     );
 
     if (!found) {
       _ms_logf(
           MS_LEVEL_WARN,
-          "event=runtime_selected_missing env=%d reaction_id=%d physical=%lld",
-          env_id, reaction_id, physical_time_ns
+          "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld",
+          env_id, (unsigned long long)reaction_index, physical_time_ns
       );
     }
 
-    if (last_pick >= 0 && last_pick != reaction_id) {
+    if (last_pick >= 0 && (uint64_t)last_pick != reaction_index) {
       _ms_logf(
           MS_LEVEL_WARN,
-          "event=mismatch env=%d picked=%d runtime=%d",
-          env_id, last_pick, reaction_id
+          "event=mismatch env=%d picked=%lld runtime=%llu",
+          env_id, last_pick, (unsigned long long)reaction_index
       );
     }
 }
@@ -432,7 +435,7 @@ void ms_on_reaction_start(
 void ms_on_reaction_end(
     int env_id,
     int worker_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long physical_time_ns,
     int status
 ) {
@@ -447,7 +450,7 @@ void ms_on_reaction_end(
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (set != NULL) {
-        int idx = _ms_ready_find(set, reaction_id);
+        int idx = _ms_ready_find(set, reaction_index);
         if (idx >= 0) {
           _ms_ready_remove_at(set, idx);
           removed = 1;
@@ -459,8 +462,8 @@ void ms_on_reaction_end(
     if (!removed) {
       _ms_logf(
           MS_LEVEL_WARN,
-          "event=ready_missing_on_end env=%d reaction_id=%d",
-          env_id, reaction_id
+          "event=ready_missing_on_end env=%d reaction_index=%llu",
+          env_id, (unsigned long long)reaction_index
       );
     }
 }

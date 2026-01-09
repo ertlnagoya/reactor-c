@@ -64,7 +64,7 @@ int ms_gettid(void);
 // Phase 1: Notify that a reaction has become ready
 void ms_on_reaction_ready(
     int env_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long logical_time_ns,
     long long deadline_ns,
     int is_input
@@ -72,9 +72,9 @@ void ms_on_reaction_ready(
 
 // Phase 1: Ask the master scheduler which reaction should be executed next
 // Return value:
-//   >= 0 : the scheduler explicitly selects a reaction_id
+//   >= 0 : the scheduler explicitly selects a reaction_index
 //   -1   : no intervention; follow the existing runtime scheduler
-int ms_pick_next(
+long long ms_pick_next(
     int env_id,
     int worker_id,
     long long logical_time_ns
@@ -84,14 +84,14 @@ int ms_pick_next(
 void ms_on_reaction_start(
     int env_id,
     int worker_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long physical_time_ns
 );
 
 void ms_on_reaction_end(
     int env_id,
     int worker_id,
-    int reaction_id,
+    uint64_t reaction_index,
     long long physical_time_ns,
     int status
 );

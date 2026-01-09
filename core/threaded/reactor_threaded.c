@@ -41,11 +41,11 @@
 extern instant_t start_time;
 
 #if SCHEDULER == SCHED_GEDF_NP
-reaction_t* lf_sched_requeue_current_and_pick_by_id(
+reaction_t* lf_sched_requeue_current_and_pick_by_index(
     lf_scheduler_t* scheduler,
     int worker_number,
     reaction_t* current,
-    int reaction_id
+    uint64_t reaction_index
 );
 #endif
 
@@ -837,7 +837,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
 
   // Notify execution start
-  ms_on_reaction_start(env->id, worker_number, reaction->number, (long long)lf_time_physical());
+  ms_on_reaction_start(env->id, worker_number, (uint64_t)reaction->index, (long long)lf_time_physical());
 
   _lf_invoke_reaction(env, reaction, worker_number);
 
@@ -845,7 +845,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
   schedule_output_reactions(env, reaction, worker_number);
 
   // Notify execution end
-  ms_on_reaction_end(env->id, worker_number, reaction->number, (long long)lf_time_physical(), 0);
+  ms_on_reaction_end(env->id, worker_number, (uint64_t)reaction->index, (long long)lf_time_physical(), 0);
 
   reaction->is_STP_violated = false;
 }
@@ -875,11 +875,12 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #endif
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
-    int pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+    long long pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
 #if SCHEDULER == SCHED_GEDF_NP
-    if (pick >= 0 && current_reaction_to_execute != NULL && pick != current_reaction_to_execute->number) {
-      reaction_t* picked = lf_sched_requeue_current_and_pick_by_id(
-          env->scheduler, worker_number, current_reaction_to_execute, pick);
+    if (pick >= 0 && current_reaction_to_execute != NULL &&
+        (uint64_t)pick != (uint64_t)current_reaction_to_execute->index) {
+      reaction_t* picked = lf_sched_requeue_current_and_pick_by_index(
+          env->scheduler, worker_number, current_reaction_to_execute, (uint64_t)pick);
       if (picked != NULL) {
         current_reaction_to_execute = picked;
       }
