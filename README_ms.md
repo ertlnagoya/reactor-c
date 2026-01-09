@@ -84,6 +84,33 @@ Example log output:
 
 ---
 
+## Phase 2
+
+### Summary (Implemented)
+
+- Enforce master scheduler picks (`ms_pick_next`) across GEDF/NP/Adaptive schedulers
+- Requeue current reaction to run the selected `reaction_index` when available
+- Keep observation logs from Phase 1 while applying control
+
+### What Phase 2 Does NOT Do
+
+- Introduce preemption (still non-preemptive execution)
+- Modify OS scheduling policies or thread priorities
+- Guarantee optimality across tags or global time horizons
+
+### Design Philosophy (Phase 2)
+
+- Apply control cautiously using validated candidates
+- Preserve safety by falling back to runtime behavior when picks are unavailable
+- Keep instrumentation to verify policy effects
+
+### Intended Audience (Phase 2)
+
+- Developers running controlled scheduling experiments
+- Researchers evaluating intervention policies under real workloads
+
+---
+
 ## Role in the Overall Roadmap
 
 - **Phase 0.5** — Worker and environment registration
