@@ -40,7 +40,7 @@
 // Global variables defined in tag.c and shared across environments:
 extern instant_t start_time;
 
-#if SCHEDULER == SCHED_GEDF_NP
+#if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
 reaction_t* lf_sched_requeue_current_and_pick_by_index(
     lf_scheduler_t* scheduler,
     int worker_number,
@@ -876,7 +876,7 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
     long long pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
-#if SCHEDULER == SCHED_GEDF_NP
+#if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
     if (pick >= 0 && current_reaction_to_execute != NULL &&
         (uint64_t)pick != (uint64_t)current_reaction_to_execute->index) {
       reaction_t* picked = lf_sched_requeue_current_and_pick_by_index(
