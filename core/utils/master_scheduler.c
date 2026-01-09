@@ -29,10 +29,54 @@ static int64_t _ms_report_min_interval_ns = 100LL * 1000LL * 1000LL;
 #define MS_MAX_WORKERS 256
 static int64_t _ms_last_report_mono_ns[MS_MAX_WORKERS] = {0};
 
+#define MS_MAX_ENVS 32
+#define MS_MAX_READY_PER_ENV 1024
+
+typedef enum {
+  MS_READY = 0,
+  MS_RUNNING = 1
+} ms_ready_state_t;
+
+typedef struct {
+  int reaction_id;
+  int64_t deadline_ns;
+  int64_t ready_time_ns;
+  int is_input;
+  ms_ready_state_t state;
+} ms_ready_entry_t;
+
+typedef struct {
+  ms_ready_entry_t entries[MS_MAX_READY_PER_ENV];
+  int count;
+  int last_pick_reaction_id;
+} ms_ready_set_t;
+
+static ms_ready_set_t _ms_ready_sets[MS_MAX_ENVS];
+
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static ms_ready_set_t* _ms_get_ready_set(int env_id) {
+  if (env_id < 0 || env_id >= MS_MAX_ENVS) return NULL;
+  return &_ms_ready_sets[env_id];
+}
+
+static int _ms_ready_find(ms_ready_set_t* set, int reaction_id) {
+  for (int i = 0; i < set->count; i++) {
+    if (set->entries[i].reaction_id == reaction_id) return i;
+  }
+  return -1;
+}
+
+static void _ms_ready_remove_at(ms_ready_set_t* set, int index) {
+  if (index < 0 || index >= set->count) return;
+  set->count--;
+  if (index != set->count) {
+    set->entries[index] = set->entries[set->count];
+  }
 }
 
 static const char* _ms_level_str(ms_log_level_t lvl) {
@@ -134,6 +178,12 @@ bool ms_init(const char* config_path) {
 
   fprintf(_ms_log, "# phase1 master_scheduler started pid=%d\n", (int)getpid());
   fflush(_ms_log);
+
+  for (int i = 0; i < MS_MAX_ENVS; i++) {
+    _ms_ready_sets[i].count = 0;
+    _ms_ready_sets[i].last_pick_reaction_id = -1;
+  }
+
   pthread_mutex_unlock(&_ms_lock);
   return true;
 }
@@ -228,11 +278,53 @@ void ms_on_reaction_ready(
     long long deadline_ns,
     int is_input
 ) {
-    // Phase 1: log only (no control yet)
+    if (!_ms_enabled) return;
+
+    int updated = 0;
+    int dropped = 0;
+    int64_t ready_time = _ms_now_mono_ns();
+
+    pthread_mutex_lock(&_ms_lock);
+    if (_ms_enabled && _ms_log != NULL) {
+      ms_ready_set_t* set = _ms_get_ready_set(env_id);
+      if (set == NULL) {
+        dropped = 1;
+      } else {
+        int idx = _ms_ready_find(set, reaction_id);
+        if (idx >= 0) {
+          ms_ready_entry_t* entry = &set->entries[idx];
+          entry->deadline_ns = deadline_ns;
+          entry->ready_time_ns = ready_time;
+          entry->is_input = is_input;
+          entry->state = MS_READY;
+          updated = 1;
+        } else if (set->count < MS_MAX_READY_PER_ENV) {
+          ms_ready_entry_t* entry = &set->entries[set->count++];
+          entry->reaction_id = reaction_id;
+          entry->deadline_ns = deadline_ns;
+          entry->ready_time_ns = ready_time;
+          entry->is_input = is_input;
+          entry->state = MS_READY;
+        } else {
+          dropped = 1;
+        }
+      }
+    }
+    pthread_mutex_unlock(&_ms_lock);
+
+    if (dropped) {
+      _ms_logf(
+          MS_LEVEL_WARN,
+          "event=ready_drop env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d",
+          env_id, reaction_id, logical_time_ns, deadline_ns, is_input
+      );
+      return;
+    }
+
     _ms_logf(
         MS_LEVEL_DEBUG,
-        "event=ready env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d",
-        env_id, reaction_id, logical_time_ns, deadline_ns, is_input
+        "event=ready env=%d reaction_id=%d logical=%lld deadline=%lld is_input=%d updated=%d",
+        env_id, reaction_id, logical_time_ns, deadline_ns, is_input, updated
     );
 }
 
@@ -241,15 +333,51 @@ int ms_pick_next(
     int worker_id,
     long long logical_time_ns
 ) {
-    (void)env_id;
+    (void)worker_id;
 
-    // Phase 1: no intervention
+    if (!_ms_enabled) return -1;
+
+    int candidate = -1;
+    int64_t candidate_deadline = 0;
+    int64_t candidate_ready = 0;
+
+    pthread_mutex_lock(&_ms_lock);
+    if (_ms_enabled && _ms_log != NULL) {
+      ms_ready_set_t* set = _ms_get_ready_set(env_id);
+      if (set != NULL) {
+        for (int i = 0; i < set->count; i++) {
+          const ms_ready_entry_t* entry = &set->entries[i];
+          if (entry->state != MS_READY) continue;
+          if (candidate < 0 ||
+              entry->deadline_ns < candidate_deadline ||
+              (entry->deadline_ns == candidate_deadline &&
+               entry->ready_time_ns < candidate_ready)) {
+            candidate = entry->reaction_id;
+            candidate_deadline = entry->deadline_ns;
+            candidate_ready = entry->ready_time_ns;
+          }
+        }
+        set->last_pick_reaction_id = candidate;
+      }
+    }
+    pthread_mutex_unlock(&_ms_lock);
+
+    if (candidate >= 0) {
+      _ms_logf(
+          MS_LEVEL_DEBUG,
+          "event=pick_next env=%d candidate=%d reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
+          env_id, candidate, (long long)candidate_deadline, (long long)candidate_ready, logical_time_ns
+      );
+    } else {
+      _ms_logf(
+          MS_LEVEL_DEBUG,
+          "event=pick_next env=%d candidate=-1 reason=empty logical=%lld",
+          env_id, logical_time_ns
+      );
+    }
+
+    // Phase 1-B: log only (no control yet)
     // Returning -1 means "follow the existing scheduler"
-    _ms_logf(
-        MS_LEVEL_DEBUG,
-        "event=pick_next worker_id=%d logical=%lld",
-        worker_id, logical_time_ns
-    );
     return -1;
 }
 
@@ -259,12 +387,46 @@ void ms_on_reaction_start(
     int reaction_id,
     long long physical_time_ns
 ) {
-    (void)env_id;
     (void)worker_id;
-    (void)reaction_id;
-    (void)physical_time_ns;
+    if (!_ms_enabled) return;
 
-    // Phase 1: log only
+    int found = 0;
+    int last_pick = -1;
+    pthread_mutex_lock(&_ms_lock);
+    if (_ms_enabled && _ms_log != NULL) {
+      ms_ready_set_t* set = _ms_get_ready_set(env_id);
+      if (set != NULL) {
+        last_pick = set->last_pick_reaction_id;
+        int idx = _ms_ready_find(set, reaction_id);
+        if (idx >= 0) {
+          set->entries[idx].state = MS_RUNNING;
+          found = 1;
+        }
+      }
+    }
+    pthread_mutex_unlock(&_ms_lock);
+
+    _ms_logf(
+        MS_LEVEL_DEBUG,
+        "event=runtime_selected env=%d reaction_id=%d physical=%lld ready_found=%d",
+        env_id, reaction_id, physical_time_ns, found
+    );
+
+    if (!found) {
+      _ms_logf(
+          MS_LEVEL_WARN,
+          "event=runtime_selected_missing env=%d reaction_id=%d physical=%lld",
+          env_id, reaction_id, physical_time_ns
+      );
+    }
+
+    if (last_pick >= 0 && last_pick != reaction_id) {
+      _ms_logf(
+          MS_LEVEL_WARN,
+          "event=mismatch env=%d picked=%d runtime=%d",
+          env_id, last_pick, reaction_id
+      );
+    }
 }
 
 void ms_on_reaction_end(
@@ -274,11 +436,31 @@ void ms_on_reaction_end(
     long long physical_time_ns,
     int status
 ) {
-    (void)env_id;
     (void)worker_id;
-    (void)reaction_id;
     (void)physical_time_ns;
     (void)status;
 
-    // Phase 1: log only
+    if (!_ms_enabled) return;
+
+    int removed = 0;
+    pthread_mutex_lock(&_ms_lock);
+    if (_ms_enabled && _ms_log != NULL) {
+      ms_ready_set_t* set = _ms_get_ready_set(env_id);
+      if (set != NULL) {
+        int idx = _ms_ready_find(set, reaction_id);
+        if (idx >= 0) {
+          _ms_ready_remove_at(set, idx);
+          removed = 1;
+        }
+      }
+    }
+    pthread_mutex_unlock(&_ms_lock);
+
+    if (!removed) {
+      _ms_logf(
+          MS_LEVEL_WARN,
+          "event=ready_missing_on_end env=%d reaction_id=%d",
+          env_id, reaction_id
+      );
+    }
 }
