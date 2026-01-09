@@ -1,4 +1,4 @@
-# Master Scheduler Phases 0–1 (Implementation Summary)
+# Master Scheduler Phases 0–3 (Implementation Summary)
 
 ## Overview
 
@@ -10,6 +10,11 @@ stable integration points that later phases can safely build upon.
 
 Phase 1 builds on that foundation by adding **lightweight observation hooks**
 and **candidate selection logic** while keeping the runtime scheduler in charge.
+
+Phase 2 introduces **active control** by enforcing selected reactions across
+runtime schedulers.
+
+Phase 3 extends this to **mixed-criticality orchestration** across environments.
 
 ---
 
@@ -108,6 +113,57 @@ Example log output:
 
 - Developers running controlled scheduling experiments
 - Researchers evaluating intervention policies under real workloads
+
+---
+
+## Phase 3
+
+### Summary (Implemented)
+
+- Mixed-criticality orchestration hooks with policy-driven degradation
+- Configurable degradation action (defer or skip) via external config file
+- Reaction-count budgets with per-reaction criticality settings
+
+### What Phase 3 Does NOT Do
+
+- Replace the underlying LF runtime scheduler implementation
+- Eliminate the need for application-level criticality annotations
+- Guarantee hard real-time bounds for all workloads
+
+### Design Philosophy (Phase 3)
+
+- Preserve safety by prioritizing high-criticality reactions under pressure
+- Keep control decisions explainable and auditable via logs
+- Prefer graceful degradation over global failure
+
+### Intended Audience (Phase 3)
+
+- Researchers studying mixed-criticality scheduling
+- Developers deploying LF in resource-constrained or safety-critical settings
+
+### Phase 3 Config File
+
+Provide a config file via `LF_MS_CONFIG` or the `config_path` argument to `ms_init`.
+Lines beginning with `#` are ignored. Supported keys are:
+
+```
+degrade_action=defer|skip
+budget_type=reaction_count
+budget_window_ns=1000000000
+default_budget=-1
+reaction,env_id,reaction_index,criticality,budget
+```
+
+Example:
+```
+degrade_action=defer
+budget_type=reaction_count
+budget_window_ns=1000000000
+default_budget=-1
+
+reaction,0,42,low,10
+reaction,0,43,high,100
+```
 
 ---
 

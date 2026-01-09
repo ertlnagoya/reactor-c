@@ -12,6 +12,7 @@
  * Environment variables:
  *  - LF_MS_DISABLE=1|true  : disable all logging (near-zero overhead)
  *  - LF_MS_LOG=/path/file  : log file path (default: /tmp/lf_master_scheduler_phase0.log)
+ *  - LF_MS_CONFIG=/path/file : optional master scheduler config file
  */
 
 #include <stdint.h>
