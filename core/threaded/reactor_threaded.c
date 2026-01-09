@@ -40,6 +40,15 @@
 // Global variables defined in tag.c and shared across environments:
 extern instant_t start_time;
 
+#if SCHEDULER == SCHED_GEDF_NP
+reaction_t* lf_sched_requeue_current_and_pick_by_id(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    int reaction_id
+);
+#endif
+
 /**
  * The maximum amount of time a worker thread should stall
  * before checking the reaction queue again.
@@ -867,11 +876,21 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
     int pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+#if SCHEDULER == SCHED_GEDF_NP
+    if (pick >= 0 && current_reaction_to_execute != NULL && pick != current_reaction_to_execute->number) {
+      reaction_t* picked = lf_sched_requeue_current_and_pick_by_id(
+          env->scheduler, worker_number, current_reaction_to_execute, pick);
+      if (picked != NULL) {
+        current_reaction_to_execute = picked;
+      }
+    }
+#else
     // Phase 1-A: ignore the result for now (log-only path)
     if (pick >= 0) {
-        // The master scheduler requested a specific reaction,
-        // but Phase 1-A does not enforce it yet.
+      // The master scheduler requested a specific reaction,
+      // but Phase 1-A does not enforce it yet.
     }
+#endif
 
     // Got a reaction that is ready to run.
     LF_PRINT_DEBUG("Worker %d: Got from scheduler reaction %s: "

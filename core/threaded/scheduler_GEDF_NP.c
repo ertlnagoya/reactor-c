@@ -226,6 +226,56 @@ reaction_t* lf_sched_get_ready_reaction(lf_scheduler_t* scheduler, int worker_nu
   return NULL;
 }
 
+reaction_t* lf_sched_requeue_current_and_pick_by_id(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    int reaction_id
+) {
+  (void)worker_number; // Reserved for future use.
+  if (current == NULL) return NULL;
+
+  LF_MUTEX_LOCK(&scheduler->env->mutex);
+  if (scheduler->should_stop) {
+    LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+    return current;
+  }
+
+  pqueue_t* q = scheduler->custom_data->reaction_q;
+  reaction_t* target = NULL;
+  for (size_t i = 1; i < q->size; i++) {
+    reaction_t* candidate = (reaction_t*)q->d[i];
+    if (candidate == NULL) continue;
+    if (candidate->number == reaction_id &&
+        LF_LEVEL(candidate->index) == scheduler->custom_data->current_level) {
+      target = candidate;
+      break;
+    }
+  }
+
+  if (target != NULL) {
+    pqueue_remove(q, (void*)target);
+    if (pqueue_insert(q, (void*)current) != 0) {
+      // Keep the queue consistent if requeue fails.
+      pqueue_insert(q, (void*)target);
+      LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+      return current;
+    }
+
+    reaction_t* next_reaction = (reaction_t*)pqueue_peek(q);
+    if (next_reaction != NULL &&
+        LF_LEVEL(next_reaction->index) == scheduler->custom_data->current_level &&
+        scheduler->number_of_idle_workers > 0) {
+      LF_COND_SIGNAL(&scheduler->custom_data->reaction_q_changed);
+    }
+    LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+    return target;
+  }
+
+  LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+  return current;
+}
+
 void lf_sched_done_with_reaction(size_t worker_number, reaction_t* done_reaction) {
   (void)worker_number; // Suppress unused parameter warning.
   if (!lf_atomic_bool_compare_and_swap((int*)&done_reaction->status, queued, inactive)) {
@@ -248,12 +298,10 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
   }
   pqueue_insert(scheduler->custom_data->reaction_q, (void*)reaction);
 
- // ---- Phase 1-A: notify "ready" (log-only) ----
+  // ---- Phase 1-A: notify "ready" (log-only) ----
   // Use scheduler->env, not "env" (which does not exist here).
-  // Keep worker_number so we can attribute readiness to a worker/thread context if desired.
   ms_on_reaction_ready(
       scheduler->env->id,
-      worker_number,
       reaction->number,
       (long long)scheduler->env->current_tag.time,
       (long long)reaction->deadline,
