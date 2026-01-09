@@ -76,6 +76,8 @@ static int64_t _ms_last_report_mono_ns[MS_MAX_WORKERS] = {0};
 #define MS_MAX_ENVS 32
 #define MS_MAX_READY_PER_ENV 1024
 
+static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...);
+
 typedef enum {
   MS_READY = 0,
   MS_RUNNING = 1,
