@@ -806,8 +806,9 @@ void ms_on_reaction_start(
     if (!found) {
       _ms_logf(
           skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld",
+          "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld skip_expected=%d",
           env_id, (unsigned long long)reaction_index, physical_time_ns
+          , skip_expected
       );
     }
 
@@ -822,9 +823,9 @@ void ms_on_reaction_start(
     if (budget_exceeded) {
       _ms_logf(
           skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=budget_exceeded env=%d reaction_index=%llu criticality=%s used=%lld budget=%lld",
+          "event=budget_exceeded env=%d reaction_index=%llu criticality=%s used=%lld budget=%lld skip_expected=%d",
           env_id, (unsigned long long)reaction_index, _ms_criticality_str(crit),
-          budget_used, budget_limit
+          budget_used, budget_limit, skip_expected
       );
     }
 }
@@ -867,8 +868,8 @@ void ms_on_reaction_end(
     if (!removed) {
       _ms_logf(
           skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=ready_missing_on_end env=%d reaction_index=%llu",
-          env_id, (unsigned long long)reaction_index
+          "event=ready_missing_on_end env=%d reaction_index=%llu skip_expected=%d",
+          env_id, (unsigned long long)reaction_index, skip_expected
       );
     }
 }
