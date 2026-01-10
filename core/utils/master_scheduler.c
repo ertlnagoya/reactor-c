@@ -539,6 +539,11 @@ void ms_on_reaction_ready(
 
     int updated = 0;
     int dropped = 0;
+    int degraded = 0;
+    ms_degrade_action_t degraded_action = MS_DEGRADE_DEFER;
+    ms_criticality_t degraded_crit = MS_CRIT_HIGH;
+    int64_t degraded_budget = 0;
+    int64_t degraded_used = 0;
     int64_t ready_time = _ms_now_mono_ns();
 
     pthread_mutex_lock(&_ms_lock);
@@ -547,6 +552,7 @@ void ms_on_reaction_ready(
       if (set == NULL) {
         dropped = 1;
       } else {
+        int entry_index = -1;
         int idx = _ms_ready_find(set, reaction_index);
         if (idx >= 0) {
           ms_ready_entry_t* entry = &set->entries[idx];
@@ -555,6 +561,7 @@ void ms_on_reaction_ready(
           entry->is_input = is_input;
           entry->state = MS_READY;
           updated = 1;
+          entry_index = idx;
         } else if (set->count < MS_MAX_READY_PER_ENV) {
           ms_ready_entry_t* entry = &set->entries[set->count++];
           entry->reaction_index = reaction_index;
@@ -562,8 +569,33 @@ void ms_on_reaction_ready(
           entry->ready_time_ns = ready_time;
           entry->is_input = is_input;
           entry->state = MS_READY;
+          entry_index = set->count - 1;
         } else {
           dropped = 1;
+        }
+
+        if (!dropped && entry_index >= 0) {
+          ms_ready_entry_t* entry = &set->entries[entry_index];
+          ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
+          if (pol == NULL && _ms_policy.default_budget >= 0) {
+            pol = _ms_get_policy(env_id, reaction_index, true);
+          }
+          if (pol != NULL &&
+              pol->criticality == MS_CRIT_LOW &&
+              _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT &&
+              pol->budget >= 0 &&
+              !_ms_budget_allows(pol, ready_time)) {
+            degraded = 1;
+            degraded_action = _ms_policy.degrade_action;
+            degraded_crit = pol->criticality;
+            degraded_budget = pol->budget;
+            degraded_used = pol->used_in_window;
+            if (_ms_policy.degrade_action == MS_DEGRADE_SKIP) {
+              _ms_ready_remove_at(set, entry_index);
+            } else {
+              entry->state = MS_DEFERRED;
+            }
+          }
         }
       }
     }
@@ -583,6 +615,16 @@ void ms_on_reaction_ready(
         "event=ready env=%d reaction_index=%llu logical=%lld deadline=%lld is_input=%d updated=%d",
         env_id, (unsigned long long)reaction_index, logical_time_ns, deadline_ns, is_input, updated
     );
+
+    if (degraded) {
+      _ms_logf(
+          MS_LEVEL_WARN,
+          "event=degrade action=%s env=%d reaction_index=%llu criticality=%s budget=%lld used=%lld",
+          _ms_degrade_str(degraded_action), env_id,
+          (unsigned long long)reaction_index, _ms_criticality_str(degraded_crit),
+          (long long)degraded_budget, (long long)degraded_used
+      );
+    }
 }
 
 long long ms_pick_next(
