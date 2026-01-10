@@ -167,6 +167,16 @@ static void _ms_refresh_budget_window(ms_reaction_policy_t* pol, int64_t now_mon
   }
 }
 
+static int _ms_is_skip_expected(ms_reaction_policy_t* pol, int64_t now_mono_ns) {
+  if (pol == NULL) return 0;
+  if (pol->criticality != MS_CRIT_LOW) return 0;
+  if (_ms_policy.degrade_action != MS_DEGRADE_SKIP) return 0;
+  if (_ms_policy.budget_type != MS_BUDGET_REACTION_COUNT) return 0;
+  if (pol->budget < 0) return 0;
+  _ms_refresh_budget_window(pol, now_mono_ns);
+  return (pol->used_in_window >= pol->budget);
+}
+
 static int _ms_budget_allows(ms_reaction_policy_t* pol, int64_t now_mono_ns) {
   if (pol == NULL) return 1;
   if (_ms_policy.budget_type != MS_BUDGET_REACTION_COUNT) return 1;
@@ -754,6 +764,7 @@ void ms_on_reaction_start(
     int budget_exceeded = 0;
     long long budget_used = 0;
     long long budget_limit = 0;
+    int skip_expected = 0;
     ms_criticality_t crit = MS_CRIT_HIGH;
     const int64_t now_mono_ns = _ms_now_mono_ns();
     pthread_mutex_lock(&_ms_lock);
@@ -773,6 +784,7 @@ void ms_on_reaction_start(
         pol = _ms_get_policy(env_id, reaction_index, true);
       }
       if (pol != NULL && _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT && pol->budget >= 0) {
+        skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
         _ms_refresh_budget_window(pol, now_mono_ns);
         pol->used_in_window++;
         if (pol->used_in_window > pol->budget) {
@@ -793,7 +805,7 @@ void ms_on_reaction_start(
 
     if (!found) {
       _ms_logf(
-          MS_LEVEL_WARN,
+          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
           "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld",
           env_id, (unsigned long long)reaction_index, physical_time_ns
       );
@@ -809,7 +821,7 @@ void ms_on_reaction_start(
 
     if (budget_exceeded) {
       _ms_logf(
-          MS_LEVEL_WARN,
+          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
           "event=budget_exceeded env=%d reaction_index=%llu criticality=%s used=%lld budget=%lld",
           env_id, (unsigned long long)reaction_index, _ms_criticality_str(crit),
           budget_used, budget_limit
@@ -831,6 +843,8 @@ void ms_on_reaction_end(
     if (!_ms_enabled) return;
 
     int removed = 0;
+    int skip_expected = 0;
+    const int64_t now_mono_ns = _ms_now_mono_ns();
     pthread_mutex_lock(&_ms_lock);
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
@@ -841,12 +855,18 @@ void ms_on_reaction_end(
           removed = 1;
         }
       }
+
+      ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
+      if (pol == NULL && _ms_policy.default_budget >= 0) {
+        pol = _ms_get_policy(env_id, reaction_index, true);
+      }
+      skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
     }
     pthread_mutex_unlock(&_ms_lock);
 
     if (!removed) {
       _ms_logf(
-          MS_LEVEL_WARN,
+          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
           "event=ready_missing_on_end env=%d reaction_index=%llu",
           env_id, (unsigned long long)reaction_index
       );
