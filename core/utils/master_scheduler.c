@@ -691,7 +691,10 @@ long long ms_pick_next(
       );
     }
 
-    // Phase 3: returning -1 means "follow the existing scheduler"
+    // Phase 3: return explicit candidate when available to avoid runtime stall.
+    if (has_candidate) {
+      return (long long)candidate;
+    }
     return -1;
 }
 
