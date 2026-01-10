@@ -43,6 +43,8 @@ typedef struct {
 
 typedef struct {
   bool enabled;
+  bool rt_enabled;
+  bool affinity_enabled;
   int64_t lag_threshold_ns;
   int ready_q_len_threshold;
   int nice_delta_low;
@@ -66,6 +68,8 @@ static ms_policy_config_t _ms_policy = {
 
 static ms_os_config_t _ms_os_config = {
   .enabled = false,
+  .rt_enabled = false,
+  .affinity_enabled = false,
   .lag_threshold_ns = -1,
   .ready_q_len_threshold = -1,
   .nice_delta_low = 5
@@ -392,6 +396,8 @@ static void _ms_os_load_env(void) {
   loaded = 1;
 
   _ms_os_config.enabled = _ms_is_true(getenv("LF_MS_OS_ENABLE"));
+  _ms_os_config.rt_enabled = _ms_is_true(getenv("LF_MS_OS_RT_ENABLE"));
+  _ms_os_config.affinity_enabled = _ms_is_true(getenv("LF_MS_OS_AFFINITY_ENABLE"));
 
   const char* lag = getenv("LF_MS_OS_LAG_NS");
   if (lag != NULL && lag[0] != '\0') {

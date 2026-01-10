@@ -173,30 +173,39 @@ reaction,0,43,high,100
 
 ### Summary (Planned / In Progress)
 
-- OS-level basic control based on runtime metrics (lag, ready queue length)
-- Linux is the required target; macOS is best-effort (experimental)
-- Default behavior is non-privileged and opt-in via environment variables
-- Initial control uses `nice` only; no scheduler policy changes by default
+- OS-level basic control driven by runtime metrics (`lag_ns`, `ready_q_len`, optional PTDV/worker util)
+- Linux is the required target; macOS is best-effort and gated behind `__APPLE__` guards
+- Default behavior is unprivileged and opt-in; new knobs only activate when explicitly enabled
+- Initial control path applies `nice` deltas; RT/affinity changes are optional future extensions
 
 ### What Phase 4 Does NOT Do
 
-- Replace the runtime scheduler
-- Require elevated privileges by default
-- Guarantee deterministic behavior across platforms
+- Replace the LF runtime scheduler
+- Require elevated privileges when `LF_MS_OS_ENABLE` is unset
+- Assume FIFO/RR or affinity always succeed (failures are logged and the runtime keeps running)
 
 ### Phase 4 Environment Flags
 
-```
-LF_MS_OS_ENABLE=1
-LF_MS_OS_LAG_NS=5000000
-LF_MS_OS_READY_Q_LEN=5
-LF_MS_OS_NICE_DELTA=5
-```
+| Variable | Description |
+|----------|-------------|
+| `LF_MS_OS_ENABLE` | Master switch that must be `1` or `true` before any OS policy is applied. |
+| `LF_MS_OS_RT_ENABLE` | Allows FIFO/RR adjustments; ignored unless `LF_MS_OS_ENABLE` is true. |
+| `LF_MS_OS_AFFINITY_ENABLE` | Allows affinity changes on Linux; opt-in guard for future features. |
+| `LF_MS_OS_LAG_NS` | Metric threshold for `lag_ns` to trigger OS interventions. |
+| `LF_MS_OS_READY_Q_LEN` | Ready-queue length threshold for policy activation. |
+| `LF_MS_OS_NICE_DELTA` | Nice delta to apply to low-criticality workers when pressure hits (default `5`). |
 
-Notes:
-- `LF_MS_OS_ENABLE` must be set or no OS policy changes are applied.
-- `LF_MS_OS_LAG_NS` and `LF_MS_OS_READY_Q_LEN` act as thresholds.
-- `LF_MS_OS_NICE_DELTA` applies to low-criticality workers under pressure.
+The runtime only applies the policy when both the metrics exceed their thresholds and `LF_MS_OS_ENABLE` is set. RT, affinity, and other dangerous knobs are ignored until their respective opt-in flags are set, and all failures emit explicit logs instead of aborting the application.
+
+### Logs
+
+- `event=os_policy_apply` records every successful nice/policy change.
+- `event=os_policy_skip` occurs when no change is needed, policies are disabled, or the requested policy is already in effect.
+- `event=os_policy_fail` records kernel failures (`errno`, operation name) so operators can triage missing privileges or unsupported targets.
+
+### Testing guidance
+
+Use `LF_MS_OS_ENABLE=1` (and keep `LF_MS_OS_RT_ENABLE=0`, `LF_MS_OS_AFFINITY_ENABLE=0`) together with `lf-tests/phase3_degrade_test.lf` to confirm that low-criticality workers are skipped, `os_policy_apply` logs appear, and `os_policy_fail`/`budget_exceeded` entries show up when privileges prevent `setpriority`. Parsing the generated log is a handy regression check in CI; the helper script `tools/phase4_log_checker.py --log <path>` can be used to gate on the presence of `os_policy_*` events before merging.
 
 ---
 
