@@ -13,6 +13,10 @@
  *  - LF_MS_DISABLE=1|true  : disable all logging (near-zero overhead)
  *  - LF_MS_LOG=/path/file  : log file path (default: /tmp/lf_master_scheduler_phase0.log)
  *  - LF_MS_CONFIG=/path/file : optional master scheduler config file
+ *  - LF_MS_OS_ENABLE=1|true : enable Phase 4 OS policy application
+ *  - LF_MS_OS_LAG_NS=...    : lag threshold for OS policy decisions
+ *  - LF_MS_OS_READY_Q_LEN=... : ready queue threshold for OS policy decisions
+ *  - LF_MS_OS_NICE_DELTA=... : nice delta to apply for low-criticality workers
  */
 
 #include <stdint.h>
@@ -52,6 +56,20 @@ typedef struct {
   int32_t ready_q_len;
   int64_t deadline_misses;
 } ms_report_t;
+
+typedef enum {
+  MS_SCHED_KEEP = 0,
+  MS_SCHED_OTHER = 1,
+  MS_SCHED_FIFO = 2,
+  MS_SCHED_RR = 3
+} ms_sched_policy_t;
+
+typedef struct {
+  int nice_delta;                 // Positive lowers priority (nice increases).
+  ms_sched_policy_t sched_policy; // KEEP unless explicitly requested.
+  int rt_priority;                // FIFO/RR only; ignored otherwise.
+  uint64_t affinity_mask;         // Optional; 0 means KEEP.
+} ms_os_policy_t;
 
 bool ms_init(const char* config_path);
 void ms_register_worker(const ms_worker_info_t* info);
@@ -96,6 +114,24 @@ void ms_on_reaction_end(
     long long physical_time_ns,
     int status
 );
+
+// Phase 4: Report metrics for OS-level policy decisions.
+void ms_on_metrics(
+    int env_id,
+    int worker_id,
+    uint64_t now_ns,
+    int64_t lag_ns,
+    int ready_q_len,
+    int64_t ptdv_ns
+);
+
+// Phase 4: Retrieve a pending OS policy for the given worker, if any.
+bool ms_take_os_policy(int worker_id, ms_os_policy_t* out_policy);
+
+// Phase 4: Log OS policy application results.
+void ms_log_os_policy_apply(int worker_id, const ms_os_policy_t* policy, int nice_applied);
+void ms_log_os_policy_fail(int worker_id, const ms_os_policy_t* policy, const char* operation, int err);
+void ms_log_os_policy_skip(int worker_id, const ms_os_policy_t* policy, const char* reason);
 
 #ifdef __cplusplus
 }

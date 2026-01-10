@@ -42,6 +42,13 @@ typedef struct {
 } ms_policy_config_t;
 
 typedef struct {
+  bool enabled;
+  int64_t lag_threshold_ns;
+  int ready_q_len_threshold;
+  int nice_delta_low;
+} ms_os_config_t;
+
+typedef struct {
   int env_id;
   uint64_t reaction_index;
   ms_criticality_t criticality;
@@ -55,6 +62,13 @@ static ms_policy_config_t _ms_policy = {
   .budget_type = MS_BUDGET_REACTION_COUNT,
   .budget_window_ns = 1000000000LL,
   .default_budget = -1
+};
+
+static ms_os_config_t _ms_os_config = {
+  .enabled = false,
+  .lag_threshold_ns = -1,
+  .ready_q_len_threshold = -1,
+  .nice_delta_low = 5
 };
 
 #define MS_MAX_REACTION_POLICIES 2048
@@ -72,6 +86,11 @@ static int64_t _ms_report_min_interval_ns = 100LL * 1000LL * 1000LL;
 
 #define MS_MAX_WORKERS 256
 static int64_t _ms_last_report_mono_ns[MS_MAX_WORKERS] = {0};
+static ms_criticality_t _ms_worker_last_crit[MS_MAX_WORKERS];
+static int _ms_worker_crit_known[MS_MAX_WORKERS] = {0};
+static ms_os_policy_t _ms_worker_pending_policy[MS_MAX_WORKERS];
+static int _ms_worker_policy_pending[MS_MAX_WORKERS] = {0};
+static int _ms_worker_last_nice_delta[MS_MAX_WORKERS] = {0};
 
 #define MS_MAX_ENVS 32
 #define MS_MAX_READY_PER_ENV 1024
@@ -119,6 +138,16 @@ static const char* _ms_degrade_str(ms_degrade_action_t action) {
     case MS_DEGRADE_DEFER: return "defer";
     case MS_DEGRADE_SKIP:  return "skip";
     default:               return "unknown";
+  }
+}
+
+static const char* _ms_sched_policy_str(ms_sched_policy_t policy) {
+  switch (policy) {
+    case MS_SCHED_KEEP:  return "keep";
+    case MS_SCHED_OTHER: return "other";
+    case MS_SCHED_FIFO:  return "fifo";
+    case MS_SCHED_RR:    return "rr";
+    default:             return "unknown";
   }
 }
 
@@ -357,6 +386,29 @@ static int _ms_is_true(const char* s) {
           strcasecmp(s, "on") == 0);
 }
 
+static void _ms_os_load_env(void) {
+  static int loaded = 0;
+  if (loaded) return;
+  loaded = 1;
+
+  _ms_os_config.enabled = _ms_is_true(getenv("LF_MS_OS_ENABLE"));
+
+  const char* lag = getenv("LF_MS_OS_LAG_NS");
+  if (lag != NULL && lag[0] != '\0') {
+    _ms_os_config.lag_threshold_ns = (int64_t)strtoll(lag, NULL, 10);
+  }
+
+  const char* rq = getenv("LF_MS_OS_READY_Q_LEN");
+  if (rq != NULL && rq[0] != '\0') {
+    _ms_os_config.ready_q_len_threshold = atoi(rq);
+  }
+
+  const char* nd = getenv("LF_MS_OS_NICE_DELTA");
+  if (nd != NULL && nd[0] != '\0') {
+    _ms_os_config.nice_delta_low = atoi(nd);
+  }
+}
+
 static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
   if (!_ms_enabled) return;
   if (lvl > _ms_level) return;
@@ -451,6 +503,7 @@ bool ms_init(const char* config_path) {
     cfg_path = getenv("LF_MS_CONFIG");
   }
   _ms_load_config(cfg_path);
+  _ms_os_load_env();
 
   return true;
 }
@@ -756,7 +809,6 @@ void ms_on_reaction_start(
     uint64_t reaction_index,
     long long physical_time_ns
 ) {
-    (void)worker_id;
     if (!_ms_enabled) return;
 
     int found = 0;
@@ -782,6 +834,10 @@ void ms_on_reaction_start(
       ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
       if (pol == NULL && _ms_policy.default_budget >= 0) {
         pol = _ms_get_policy(env_id, reaction_index, true);
+      }
+      if (pol != NULL && worker_id >= 0 && worker_id < MS_MAX_WORKERS) {
+        _ms_worker_last_crit[worker_id] = pol->criticality;
+        _ms_worker_crit_known[worker_id] = 1;
       }
       if (pol != NULL && _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT && pol->budget >= 0) {
         skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
@@ -872,4 +928,113 @@ void ms_on_reaction_end(
           env_id, (unsigned long long)reaction_index, skip_expected
       );
     }
+}
+
+void ms_on_metrics(
+    int env_id,
+    int worker_id,
+    uint64_t now_ns,
+    int64_t lag_ns,
+    int ready_q_len,
+    int64_t ptdv_ns
+) {
+  (void)env_id;
+  (void)now_ns;
+  (void)ptdv_ns;
+
+  if (!_ms_enabled) return;
+  if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return;
+
+  int pressure = 0;
+  if (_ms_os_config.lag_threshold_ns >= 0 && lag_ns >= _ms_os_config.lag_threshold_ns) {
+    pressure = 1;
+  }
+  if (_ms_os_config.ready_q_len_threshold >= 0 &&
+      ready_q_len >= 0 &&
+      ready_q_len >= _ms_os_config.ready_q_len_threshold) {
+    pressure = 1;
+  }
+
+  ms_criticality_t crit = MS_CRIT_HIGH;
+  int desired_delta = 0;
+  ms_os_policy_t policy = {
+    .nice_delta = 0,
+    .sched_policy = MS_SCHED_KEEP,
+    .rt_priority = 0,
+    .affinity_mask = 0
+  };
+
+  pthread_mutex_lock(&_ms_lock);
+  if (_ms_worker_crit_known[worker_id]) {
+    crit = _ms_worker_last_crit[worker_id];
+  }
+  if (pressure && crit == MS_CRIT_LOW) {
+    desired_delta = _ms_os_config.nice_delta_low;
+  }
+  if (desired_delta == _ms_worker_last_nice_delta[worker_id]) {
+    pthread_mutex_unlock(&_ms_lock);
+    return;
+  }
+  _ms_worker_last_nice_delta[worker_id] = desired_delta;
+
+  policy.nice_delta = desired_delta;
+  if (!_ms_os_config.enabled) {
+    _ms_logf(
+        MS_LEVEL_INFO,
+        "event=os_policy_skip worker_id=%d reason=disabled nice_delta=%d",
+        worker_id, desired_delta
+    );
+    pthread_mutex_unlock(&_ms_lock);
+    return;
+  }
+
+  _ms_worker_pending_policy[worker_id] = policy;
+  _ms_worker_policy_pending[worker_id] = 1;
+  pthread_mutex_unlock(&_ms_lock);
+}
+
+bool ms_take_os_policy(int worker_id, ms_os_policy_t* out_policy) {
+  if (!_ms_enabled) return false;
+  if (out_policy == NULL) return false;
+  if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return false;
+
+  pthread_mutex_lock(&_ms_lock);
+  if (_ms_worker_policy_pending[worker_id]) {
+    *out_policy = _ms_worker_pending_policy[worker_id];
+    _ms_worker_policy_pending[worker_id] = 0;
+    pthread_mutex_unlock(&_ms_lock);
+    return true;
+  }
+  pthread_mutex_unlock(&_ms_lock);
+  return false;
+}
+
+void ms_log_os_policy_apply(int worker_id, const ms_os_policy_t* policy, int nice_applied) {
+  if (policy == NULL) return;
+  _ms_logf(
+      MS_LEVEL_INFO,
+      "event=os_policy_apply worker_id=%d nice_delta=%d nice_applied=%d policy=%s",
+      worker_id, policy->nice_delta, nice_applied,
+      _ms_sched_policy_str(policy->sched_policy)
+  );
+}
+
+void ms_log_os_policy_fail(int worker_id, const ms_os_policy_t* policy, const char* operation, int err) {
+  if (policy == NULL) return;
+  _ms_logf(
+      MS_LEVEL_WARN,
+      "event=os_policy_fail worker_id=%d op=%s err=%d nice_delta=%d policy=%s",
+      worker_id, (operation != NULL ? operation : "(null)"), err,
+      policy->nice_delta, _ms_sched_policy_str(policy->sched_policy)
+  );
+}
+
+void ms_log_os_policy_skip(int worker_id, const ms_os_policy_t* policy, const char* reason) {
+  if (policy == NULL) return;
+  _ms_logf(
+      MS_LEVEL_INFO,
+      "event=os_policy_skip worker_id=%d reason=%s nice_delta=%d policy=%s",
+      worker_id, (reason != NULL ? reason : "(null)"),
+      policy->nice_delta, _ms_sched_policy_str(policy->sched_policy)
+  );
 }

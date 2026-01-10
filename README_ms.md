@@ -1,4 +1,4 @@
-# Master Scheduler Phases 0–3 (Implementation Summary)
+# Master Scheduler Phases 0–4 (Implementation Summary)
 
 ## Overview
 
@@ -15,6 +15,8 @@ Phase 2 introduces **active control** by enforcing selected reactions across
 runtime schedulers.
 
 Phase 3 extends this to **mixed-criticality orchestration** across environments.
+
+Phase 4 introduces **OS-level basic control** using runtime metrics.
 
 ---
 
@@ -167,12 +169,44 @@ reaction,0,43,high,100
 
 ---
 
+## Phase 4
+
+### Summary (Planned / In Progress)
+
+- OS-level basic control based on runtime metrics (lag, ready queue length)
+- Linux is the required target; macOS is best-effort (experimental)
+- Default behavior is non-privileged and opt-in via environment variables
+- Initial control uses `nice` only; no scheduler policy changes by default
+
+### What Phase 4 Does NOT Do
+
+- Replace the runtime scheduler
+- Require elevated privileges by default
+- Guarantee deterministic behavior across platforms
+
+### Phase 4 Environment Flags
+
+```
+LF_MS_OS_ENABLE=1
+LF_MS_OS_LAG_NS=5000000
+LF_MS_OS_READY_Q_LEN=5
+LF_MS_OS_NICE_DELTA=5
+```
+
+Notes:
+- `LF_MS_OS_ENABLE` must be set or no OS policy changes are applied.
+- `LF_MS_OS_LAG_NS` and `LF_MS_OS_READY_Q_LEN` act as thresholds.
+- `LF_MS_OS_NICE_DELTA` applies to low-criticality workers under pressure.
+
+---
+
 ## Role in the Overall Roadmap
 
 - **Phase 0.5** — Worker and environment registration
 - **Phase 1** — Metric collection (lag, PTDV, queue length)
 - **Phase 2** — Active control (priority and policy adjustment)
 - **Phase 3** — Mixed-criticality orchestration
+- **Phase 4** — OS-level control (nice-based adjustments, Linux first)
 
 Each phase incrementally extends functionality without breaking
 the guarantees established in Phase 0.

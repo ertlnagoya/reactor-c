@@ -17,6 +17,8 @@
 #include <time.h>
 #include <stdio.h>   // snprintf
 #include <stdlib.h>   // getenv, atoi
+#include <errno.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -60,6 +62,72 @@ reaction_t* lf_sched_requeue_current_and_pick_by_index(
  * Global mutex, used for synchronizing across environments. Mainly used for token-management and tracing
  */
 lf_mutex_t global_mutex;
+
+#define MS_OS_MAX_WORKERS 256
+
+typedef struct {
+  int base_valid;
+  int base_nice;
+  int last_valid;
+  int last_nice;
+} ms_os_worker_state_t;
+
+static ms_os_worker_state_t _ms_os_worker_state[MS_OS_MAX_WORKERS];
+
+static int _ms_os_target_id(void) {
+#ifdef __linux__
+  return ms_gettid();
+#else
+  return (int)getpid();
+#endif
+}
+
+static int _ms_os_clamp_nice(int nice_value) {
+  if (nice_value < -20) return -20;
+  if (nice_value > 19) return 19;
+  return nice_value;
+}
+
+static int _ms_os_read_nice(int id, int* nice_out) {
+  errno = 0;
+  int current = getpriority(PRIO_PROCESS, id);
+  if (errno != 0) return -1;
+  if (nice_out != NULL) *nice_out = current;
+  return 0;
+}
+
+// Return 0 on applied, 1 on no-op (already applied), -1 on failure.
+static int _ms_os_apply_nice(int worker_id, int nice_delta, int* applied_nice) {
+  if (worker_id < 0 || worker_id >= MS_OS_MAX_WORKERS) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  const int id = _ms_os_target_id();
+  ms_os_worker_state_t* state = &_ms_os_worker_state[worker_id];
+
+  if (!state->base_valid) {
+    if (_ms_os_read_nice(id, &state->base_nice) != 0) {
+      return -1;
+    }
+    state->base_valid = 1;
+  }
+
+  int desired = _ms_os_clamp_nice(state->base_nice + nice_delta);
+  if (state->last_valid && state->last_nice == desired) {
+    if (applied_nice != NULL) *applied_nice = desired;
+    return 1;
+  }
+
+  if (setpriority(PRIO_PROCESS, id, desired) != 0) {
+    return -1;
+  }
+
+  state->last_valid = 1;
+  state->last_nice = desired;
+  if (applied_nice != NULL) *applied_nice = desired;
+  return 0;
+}
 
 void _lf_increment_tag_barrier_locked(environment_t* env, tag_t future_tag) {
   assert(env != GLOBAL_ENVIRONMENT);
@@ -830,6 +898,29 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
     rep.deadline_misses = 0;
 
     ms_report(&rep);
+
+    ms_on_metrics(
+        env->id,
+        worker_number,
+        (uint64_t)rep.physical_time_ns,
+        rep.lag_ns,
+        rep.ready_q_len,
+        -1
+    );
+
+    ms_os_policy_t policy;
+    if (ms_take_os_policy(worker_number, &policy)) {
+      int applied_nice = 0;
+      int rc = _ms_os_apply_nice(worker_number, policy.nice_delta, &applied_nice);
+      if (rc == 0) {
+        ms_log_os_policy_apply(worker_number, &policy, applied_nice);
+      } else if (rc > 0) {
+        ms_log_os_policy_skip(worker_number, &policy, "already_applied");
+      } else {
+        int err = errno;
+        ms_log_os_policy_fail(worker_number, &policy, "setpriority", err);
+      }
+    }
   }
   // -------------------------------------------------------------------
 
