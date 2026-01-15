@@ -951,15 +951,22 @@ void ms_on_metrics(
   if (!_ms_enabled) return;
   if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return;
 
-  int pressure = 0;
-  if (_ms_os_config.lag_threshold_ns >= 0 && lag_ns >= _ms_os_config.lag_threshold_ns) {
-    pressure = 1;
+  int ready_len = ready_q_len;
+  if (ready_len < 0) {
+    ms_ready_set_t* ready_set = _ms_get_ready_set(env_id);
+    if (ready_set != NULL) {
+      ready_len = ready_set->count;
+    }
   }
-  if (_ms_os_config.ready_q_len_threshold >= 0 &&
-      ready_q_len >= 0 &&
-      ready_q_len >= _ms_os_config.ready_q_len_threshold) {
-    pressure = 1;
-  }
+
+  const bool lag_enabled = (_ms_os_config.lag_threshold_ns >= 0);
+  const bool ready_enabled = (_ms_os_config.ready_q_len_threshold >= 0);
+  const bool metrics_enabled = (lag_enabled || ready_enabled);
+  const bool lag_pressure = (!lag_enabled) || (lag_ns >= _ms_os_config.lag_threshold_ns);
+  const bool ready_pressure =
+      (!ready_enabled) ||
+      (ready_len >= 0 && ready_len >= _ms_os_config.ready_q_len_threshold);
+  int pressure = (metrics_enabled && lag_pressure && ready_pressure) ? 1 : 0;
 
   ms_criticality_t crit = MS_CRIT_HIGH;
   int desired_delta = 0;
