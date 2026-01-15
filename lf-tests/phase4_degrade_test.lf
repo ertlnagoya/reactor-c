@@ -1,0 +1,22 @@
+target C;
+
+main reactor phase3_degrade_test {
+    int count = 0;
+    timer high_t(0, 200 msec);
+    timer low_t(100 msec);
+
+    reaction(high_t) {
+        count += 1;
+        if (count >= 50) {
+            lf_request_stop();
+        }
+    }
+
+    reaction(low_t) {
+        // Low-critical work: busy loop to inflate lag.
+        for (int i = 0; i < 500000; i++) {
+            volatile int sink = i;
+            (void)sink;
+        }
+    }
+}
