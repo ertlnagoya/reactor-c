@@ -18,6 +18,7 @@ static pthread_mutex_t _ms_lock = PTHREAD_MUTEX_INITIALIZER;
 static FILE* _ms_log = NULL;
 static bool _ms_enabled = true;
 static ms_log_level_t _ms_level = MS_LEVEL_INFO;
+static bool _ms_observe_only = false;
 
 typedef enum {
   MS_CRIT_HIGH = 0,
@@ -474,6 +475,11 @@ bool ms_init(const char* config_path) {
     pthread_mutex_unlock(&_ms_lock);
     return true;
   }
+  if (_ms_is_true(getenv("LF_MS_OBSERVE_ONLY"))) {
+    pthread_mutex_lock(&_ms_lock);
+    _ms_observe_only = true;
+    pthread_mutex_unlock(&_ms_lock);
+  }
 
   const char* path = getenv("LF_MS_LOG");
   if (path == NULL || path[0] == '\0') {
@@ -704,6 +710,13 @@ long long ms_pick_next(
     (void)worker_id;
 
     if (!_ms_enabled) return -1;
+    if (_ms_observe_only) {
+      _ms_logf(
+          MS_LEVEL_INFO,
+          "event=pick_next env=%d candidate=-1 reason=observe_only logical=%lld",
+          env_id, logical_time_ns);
+      return -1;
+    }
 
     uint64_t candidate = 0;
     int has_candidate = 0;
