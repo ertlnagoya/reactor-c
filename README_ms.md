@@ -171,12 +171,17 @@ reaction,0,43,high,100
 
 ## Phase 4
 
-### Summary (Planned / In Progress)
+### Summary (Implemented)
 
-- OS-level basic control driven by runtime metrics (`lag_ns`, `ready_q_len`, optional PTDV/worker util)
-- Linux is the required target; macOS is best-effort and gated behind `__APPLE__` guards
-- Default behavior is unprivileged and opt-in; new knobs only activate when explicitly enabled
-- Initial control path applies `nice` deltas; RT/affinity changes are optional future extensions
+- OS-level control path driven by runtime pressure metrics (`lag_ns`, `ready_q_len`)
+- User-space policy application for worker threads:
+  - `nice` control
+  - optional RT policy control (`SCHED_FIFO`/`SCHED_OTHER`)
+- Support for two RT styles:
+  - single-worker RT
+  - worker-group RT (applies RT to the runtime thread set needed for progress)
+- High-criticality guard knobs to avoid harmful OS policy flips under unstable conditions
+- Structured `os_policy_*` logs for auditability of apply/skip/fail outcomes
 
 ### What Phase 4 Does NOT Do
 
@@ -190,12 +195,19 @@ reaction,0,43,high,100
 |----------|-------------|
 | `LF_MS_OS_ENABLE` | Master switch that must be `1` or `true` before any OS policy is applied. |
 | `LF_MS_OS_RT_ENABLE` | Allows FIFO/RR adjustments; ignored unless `LF_MS_OS_ENABLE` is true. |
-| `LF_MS_OS_AFFINITY_ENABLE` | Allows affinity changes on Linux; opt-in guard for future features. |
+| `LF_MS_OS_RT_GROUP_ENABLE` | Enables RT application for worker-group mode (instead of single-worker only). |
 | `LF_MS_OS_LAG_NS` | Metric threshold for `lag_ns` to trigger OS interventions. |
 | `LF_MS_OS_READY_Q_LEN` | Ready-queue length threshold for policy activation. |
-| `LF_MS_OS_NICE_DELTA` | Nice delta to apply to low-criticality workers when pressure hits (default `5`). |
+| `LF_MS_OS_NICE_DELTA` | Nice delta to apply when pressure hits. |
+| `LF_MS_OS_LC_BASE_NICE_DELTA` | Base nice delta for lower-criticality workers. |
+| `LF_MS_OS_HC_NICE_DELTA` | Nice delta for higher-criticality workers. |
+| `LF_MS_OS_RT_PRIO_HC` | RT priority for higher-criticality worker/group path. |
+| `LF_MS_OS_RT_PRIO_LC` | RT priority for lower-criticality worker/group path. |
+| `LF_MS_HC_GUARD_ENABLE` | Enables high-criticality guard checks for OS control activation. |
+| `LF_MS_HC_GUARD_LAG_NS` | Guard threshold for lag-based activation. |
+| `LF_MS_HC_GUARD_READY_Q_LEN` | Guard threshold for ready-queue-based activation. |
 
-The runtime only applies the policy when both the metrics exceed their thresholds and `LF_MS_OS_ENABLE` is set. RT, affinity, and other dangerous knobs are ignored until their respective opt-in flags are set, and all failures emit explicit logs instead of aborting the application.
+The runtime applies OS policy only when pressure thresholds are met and `LF_MS_OS_ENABLE` is set. RT controls are opt-in (`LF_MS_OS_RT_ENABLE`) and failure paths are logged without terminating runtime execution.
 
 ### Logs
 
@@ -205,7 +217,7 @@ The runtime only applies the policy when both the metrics exceed their threshold
 
 ### Testing guidance
 
-Use `LF_MS_OS_ENABLE=1` (and keep `LF_MS_OS_RT_ENABLE=0`, `LF_MS_OS_AFFINITY_ENABLE=0`) together with `lf-tests/phase3_degrade_test.lf` to confirm that low-criticality workers are skipped, `os_policy_apply` logs appear, and `os_policy_fail`/`budget_exceeded` entries show up when privileges prevent `setpriority`. Parsing the generated log is a handy regression check in CI; the helper script `tools/phase4_log_checker.py --log <path>` can be used to gate on the presence of `os_policy_*` events before merging.
+Use the reproducible E1/E2 procedure in `README_ms_performance_test.md` to validate Phase 4 behavior. At minimum, check that `os_policy_apply`, `os_policy_skip`, and `os_policy_fail` events are present in `ms.log` under the expected conditions, and verify capability-dependent behavior (`--cap-add SYS_NICE`) for RT/nice operations.
 
 ---
 

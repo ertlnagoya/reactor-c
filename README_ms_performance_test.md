@@ -5,6 +5,26 @@ This document describes reproducible steps for the current MS performance evalua
 - E1: runtime overhead of MS intervention
 - E2: HC miss-rate comparison across LF baseline and two MS+RT configurations
 
+## 0. Reproducing tagged artifacts
+
+To reproduce the exact code/data state used for paper references, checkout a fixed tag:
+
+```bash
+git checkout v1.0
+```
+
+Reference tags:
+
+- MS implementation: `ms-v1.0`
+- Evaluation code and artifacts: `ms-eval-v1.0`
+- Consolidated snapshot: `v1.0`
+
+Reference URLs:
+
+- https://github.com/ertlnagoya/reactor-c/tree/ms-v1.0
+- https://github.com/ertlnagoya/reactor-c/tree/ms-eval-v1.0
+- https://github.com/ertlnagoya/reactor-c/tree/v1.0
+
 ## 1. Common workflow (Docker rebuild and shell)
 
 Run all evaluation commands from the repository root (`/workspace/reactor-c` in container).
@@ -226,6 +246,10 @@ Output labels in the plot:
 - `MS + RT (single-worker)`
 - `MS + RT (worker-group, proposed)`
 
+Paper figure file:
+
+- `ms-eval/figures/fig_e2_rt_comparison_v2.png`
+
 Sample size note:
 
 - baseline in the plot is pooled from both long CSVs (`n=60`)
@@ -240,3 +264,7 @@ Sample size note:
   - command lines
   - exact CSV file names used
   - figure generation command
+
+Current E1 figure commonly used in manuscript updates:
+
+- `ms-eval/figures/fig2_overhead_20260227_013034.png`
