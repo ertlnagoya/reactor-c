@@ -12,6 +12,7 @@ def main() -> None:
     ap.add_argument("--window-ns", type=int, default=1_000_000_000)
     ap.add_argument("--degrade-action", default="skip")
     ap.add_argument("--budget-type", default="reaction_count")
+    ap.add_argument("--reaction-indices", default="")
     args = ap.parse_args()
 
     out_path = Path(args.out)
@@ -23,11 +24,21 @@ def main() -> None:
     lines.append(f"budget_window_ns={args.window_ns}")
     lines.append("default_budget=-1")
 
-    # Assumes reaction indices are contiguous and ordered as in the LF generator.
+    if args.reaction_indices.strip():
+        parsed = [x.strip() for x in args.reaction_indices.split(",") if x.strip()]
+        reaction_indices = [int(x) for x in parsed]
+        if len(reaction_indices) < (args.hc + args.lc):
+            raise ValueError(
+                f"need at least {args.hc + args.lc} reaction indices, got {len(reaction_indices)}"
+            )
+    else:
+        # Fallback: assumes contiguous reaction indices 0..N-1.
+        reaction_indices = list(range(args.hc + args.lc))
+
     for rid in range(args.hc + args.lc):
         crit = "high" if rid < args.hc else "low"
         budget = -1 if crit == "high" else args.lc_budget
-        lines.append(f"reaction,0,{rid},{crit},{budget}")
+        lines.append(f"reaction,0,{reaction_indices[rid]},{crit},{budget}")
 
     out_path.write_text("\n".join(lines) + "\n")
 

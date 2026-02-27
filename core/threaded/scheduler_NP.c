@@ -25,6 +25,7 @@
 #include "tracepoint.h"
 #include "util.h"
 #include "reactor_threaded.h"
+#include "reactor.h"
 #include "master_scheduler.h"
 
 #ifdef FEDERATED
@@ -43,6 +44,31 @@ typedef struct custom_scheduler_data_t {
                              // no more than 4 worker threads should wake up to process reactions.
   lf_mutex_t reaction_q_lock;
 } custom_scheduler_data_t;
+
+static inline uint64_t _ms_hash_str64(const char* s) {
+  uint64_t h = 1469598103934665603ULL;
+  if (s == NULL) return h;
+  while (*s) {
+    h ^= (uint8_t)(*s++);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
+  if (reaction == NULL) return 0;
+  const char* instance = NULL;
+  if (reaction->self != NULL) {
+    instance = lf_reactor_full_name((self_base_t*)reaction->self);
+  }
+  if (instance != NULL && instance[0] != '\0') {
+    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  if (reaction->name != NULL && reaction->name[0] != '\0') {
+    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
+}
 
 /////////////////// Scheduler Private API /////////////////////////
 
@@ -400,6 +426,43 @@ reaction_t* lf_sched_requeue_current_and_pick_by_index(
   return (target != NULL) ? target : current;
 }
 
+reaction_t* lf_sched_requeue_current_and_pick_by_key(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_key
+) {
+  (void)worker_number; // Reserved for future use.
+  if (scheduler == NULL || scheduler->custom_data == NULL || current == NULL) return current;
+
+  size_t current_level = scheduler->custom_data->next_reaction_level - 1;
+  LF_MUTEX_LOCK(&scheduler->custom_data->reaction_q_lock);
+#ifdef FEDERATED
+  LF_MUTEX_LOCK(&scheduler->custom_data->array_of_mutexes[current_level]);
+#endif
+
+  reaction_t** executing = scheduler->custom_data->executing_reactions;
+  int max_index = scheduler->indexes[current_level];
+  reaction_t* target = NULL;
+  if (max_index >= 0) {
+    for (int i = 0; i <= max_index; i++) {
+      reaction_t* candidate = executing[i];
+      if (candidate == NULL) continue;
+      if (_ms_reaction_stable_key(candidate) == reaction_key) {
+        target = candidate;
+        executing[i] = current;
+        break;
+      }
+    }
+  }
+
+#ifdef FEDERATED
+  lf_mutex_unlock(&scheduler->custom_data->array_of_mutexes[current_level]);
+#endif
+  LF_MUTEX_UNLOCK(&scheduler->custom_data->reaction_q_lock);
+  return (target != NULL) ? target : current;
+}
+
 /**
  * @brief Inform the scheduler that worker thread 'worker_number' is done
  * executing the 'done_reaction'.
@@ -445,7 +508,7 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
 
   ms_on_reaction_ready(
       scheduler->env->id,
-      (uint64_t)reaction->index,
+      _ms_reaction_stable_key(reaction),
       (long long)scheduler->env->current_tag.time,
       (long long)reaction->deadline,
       (int)reaction->is_an_input_reaction);

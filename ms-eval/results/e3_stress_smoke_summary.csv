@@ -1,0 +1,2 @@
+load_factor,baseline_mean,baseline_ci_low,baseline_ci_high,mixed_mean,mixed_ci_low,mixed_ci_high,partitioned_mean,partitioned_ci_low,partitioned_ci_high,delta_mean,delta_ci_low,delta_ci_high,p_value_partition_vs_mixed,mixed_os_apply_mean,partitioned_os_apply_mean
+0.60,100.000,100.000,100.000,100.000,100.000,100.000,100.000,100.000,100.000,0.000,0.000,0.000,1.0000,0.000,1.000

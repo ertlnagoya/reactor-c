@@ -33,6 +33,7 @@
 #include "scheduler_sync_tag_advance.h"
 #include "scheduler.h"
 #include "tracepoint.h"
+#include "reactor.h"
 #include "util.h"
 #include "master_scheduler.h"
 
@@ -47,6 +48,31 @@ typedef struct custom_scheduler_data_t {
   size_t current_level;
   bool solo_holds_mutex; // Indicates sole thread holds the mutex.
 } custom_scheduler_data_t;
+
+static inline uint64_t _ms_hash_str64(const char* s) {
+  uint64_t h = 1469598103934665603ULL;
+  if (s == NULL) return h;
+  while (*s) {
+    h ^= (uint8_t)(*s++);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
+  if (reaction == NULL) return 0;
+  const char* instance = NULL;
+  if (reaction->self != NULL) {
+    instance = lf_reactor_full_name((self_base_t*)reaction->self);
+  }
+  if (instance != NULL && instance[0] != '\0') {
+    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  if (reaction->name != NULL && reaction->name[0] != '\0') {
+    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
+}
 
 /////////////////// Scheduler Private API /////////////////////////
 
@@ -276,6 +302,55 @@ reaction_t* lf_sched_requeue_current_and_pick_by_index(
   return current;
 }
 
+reaction_t* lf_sched_requeue_current_and_pick_by_key(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_key
+) {
+  (void)worker_number; // Reserved for future use.
+  if (current == NULL) return NULL;
+
+  LF_MUTEX_LOCK(&scheduler->env->mutex);
+  if (scheduler->should_stop) {
+    LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+    return current;
+  }
+
+  pqueue_t* q = scheduler->custom_data->reaction_q;
+  reaction_t* target = NULL;
+  for (size_t i = 1; i < q->size; i++) {
+    reaction_t* candidate = (reaction_t*)q->d[i];
+    if (candidate == NULL) continue;
+    if (_ms_reaction_stable_key(candidate) == reaction_key &&
+        LF_LEVEL(candidate->index) == scheduler->custom_data->current_level) {
+      target = candidate;
+      break;
+    }
+  }
+
+  if (target != NULL) {
+    pqueue_remove(q, (void*)target);
+    if (pqueue_insert(q, (void*)current) != 0) {
+      pqueue_insert(q, (void*)target);
+      LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+      return current;
+    }
+
+    reaction_t* next_reaction = (reaction_t*)pqueue_peek(q);
+    if (next_reaction != NULL &&
+        LF_LEVEL(next_reaction->index) == scheduler->custom_data->current_level &&
+        scheduler->number_of_idle_workers > 0) {
+      LF_COND_SIGNAL(&scheduler->custom_data->reaction_q_changed);
+    }
+    LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+    return target;
+  }
+
+  LF_MUTEX_UNLOCK(&scheduler->env->mutex);
+  return current;
+}
+
 void lf_sched_done_with_reaction(size_t worker_number, reaction_t* done_reaction) {
   (void)worker_number; // Suppress unused parameter warning.
   if (!lf_atomic_bool_compare_and_swap((int*)&done_reaction->status, queued, inactive)) {
@@ -302,7 +377,7 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
   // Use scheduler->env, not "env" (which does not exist here).
   ms_on_reaction_ready(
       scheduler->env->id,
-      (uint64_t)reaction->index,
+      _ms_reaction_stable_key(reaction),
       (long long)scheduler->env->current_tag.time,
       (long long)reaction->deadline,
       (int)reaction->is_an_input_reaction);

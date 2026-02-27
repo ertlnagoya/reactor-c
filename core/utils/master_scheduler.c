@@ -19,6 +19,9 @@ static FILE* _ms_log = NULL;
 static bool _ms_enabled = true;
 static ms_log_level_t _ms_level = MS_LEVEL_INFO;
 static bool _ms_observe_only = false;
+static bool _ms_minimal_log = false;
+static int _ms_partition_enabled = 0;
+static int _ms_partition_hc_workers = 0;
 
 typedef enum {
   MS_CRIT_HIGH = 0,
@@ -46,9 +49,19 @@ typedef struct {
   bool enabled;
   bool rt_enabled;
   bool affinity_enabled;
+  bool allow_mixed_workers;
   int64_t lag_threshold_ns;
   int ready_q_len_threshold;
+  int lc_base_nice_delta;
   int nice_delta_low;
+  int hc_nice_delta;
+  int rt_priority_hc;
+  int rt_priority_lc;
+  bool rt_group_enable;
+  int64_t min_switch_interval_ns;
+  bool hc_guard_enabled;
+  int64_t hc_guard_lag_ns;
+  int hc_guard_ready_q_len;
 } ms_os_config_t;
 
 typedef struct {
@@ -71,9 +84,19 @@ static ms_os_config_t _ms_os_config = {
   .enabled = false,
   .rt_enabled = false,
   .affinity_enabled = false,
+  .allow_mixed_workers = false,
   .lag_threshold_ns = -1,
   .ready_q_len_threshold = -1,
-  .nice_delta_low = 5
+  .lc_base_nice_delta = 0,
+  .nice_delta_low = 5,
+  .hc_nice_delta = 0,
+  .rt_priority_hc = 10,
+  .rt_priority_lc = 2,
+  .rt_group_enable = false,
+  .min_switch_interval_ns = 5LL * 1000LL * 1000LL,
+  .hc_guard_enabled = false,
+  .hc_guard_lag_ns = -1,
+  .hc_guard_ready_q_len = -1
 };
 
 #define MS_MAX_REACTION_POLICIES 2048
@@ -96,6 +119,10 @@ static int _ms_worker_crit_known[MS_MAX_WORKERS] = {0};
 static ms_os_policy_t _ms_worker_pending_policy[MS_MAX_WORKERS];
 static int _ms_worker_policy_pending[MS_MAX_WORKERS] = {0};
 static int _ms_worker_last_nice_delta[MS_MAX_WORKERS] = {0};
+static int _ms_worker_last_sched_policy[MS_MAX_WORKERS] = {0}; // ms_sched_policy_t
+static int _ms_worker_last_rt_priority[MS_MAX_WORKERS] = {0};
+static int64_t _ms_worker_last_nice_switch_ns[MS_MAX_WORKERS] = {0};
+static uint8_t _ms_worker_crit_mask[MS_MAX_WORKERS] = {0}; // bit0: high, bit1: low
 
 #define MS_MAX_ENVS 32
 #define MS_MAX_READY_PER_ENV 1024
@@ -123,6 +150,7 @@ typedef struct {
 } ms_ready_set_t;
 
 static ms_ready_set_t _ms_ready_sets[MS_MAX_ENVS];
+static int _ms_env_pressure[MS_MAX_ENVS] = {0};
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -391,6 +419,16 @@ static int _ms_is_true(const char* s) {
           strcasecmp(s, "on") == 0);
 }
 
+static ms_criticality_t _ms_worker_target_crit(int worker_id) {
+  if (!_ms_partition_enabled || worker_id < 0) {
+    return MS_CRIT_HIGH;
+  }
+  if (worker_id < _ms_partition_hc_workers) {
+    return MS_CRIT_HIGH;
+  }
+  return MS_CRIT_LOW;
+}
+
 static void _ms_os_load_env(void) {
   static int loaded = 0;
   if (loaded) return;
@@ -399,6 +437,7 @@ static void _ms_os_load_env(void) {
   _ms_os_config.enabled = _ms_is_true(getenv("LF_MS_OS_ENABLE"));
   _ms_os_config.rt_enabled = _ms_is_true(getenv("LF_MS_OS_RT_ENABLE"));
   _ms_os_config.affinity_enabled = _ms_is_true(getenv("LF_MS_OS_AFFINITY_ENABLE"));
+  _ms_os_config.allow_mixed_workers = _ms_is_true(getenv("LF_MS_OS_ALLOW_MIXED"));
 
   const char* lag = getenv("LF_MS_OS_LAG_NS");
   if (lag != NULL && lag[0] != '\0') {
@@ -414,6 +453,79 @@ static void _ms_os_load_env(void) {
   if (nd != NULL && nd[0] != '\0') {
     _ms_os_config.nice_delta_low = atoi(nd);
   }
+
+  const char* lbd = getenv("LF_MS_OS_LC_BASE_NICE_DELTA");
+  if (lbd != NULL && lbd[0] != '\0') {
+    _ms_os_config.lc_base_nice_delta = atoi(lbd);
+  }
+
+  const char* hnd = getenv("LF_MS_OS_HC_NICE_DELTA");
+  if (hnd != NULL && hnd[0] != '\0') {
+    _ms_os_config.hc_nice_delta = atoi(hnd);
+  }
+
+  const char* msw = getenv("LF_MS_OS_MIN_SWITCH_NS");
+  if (msw != NULL && msw[0] != '\0') {
+    _ms_os_config.min_switch_interval_ns = (int64_t)strtoll(msw, NULL, 10);
+  }
+  const char* rtp = getenv("LF_MS_OS_RT_PRIO_HC");
+  if (rtp != NULL && rtp[0] != '\0') {
+    _ms_os_config.rt_priority_hc = atoi(rtp);
+    if (_ms_os_config.rt_priority_hc < 1) {
+      _ms_os_config.rt_priority_hc = 1;
+    }
+  }
+  const char* rtpl = getenv("LF_MS_OS_RT_PRIO_LC");
+  if (rtpl != NULL && rtpl[0] != '\0') {
+    _ms_os_config.rt_priority_lc = atoi(rtpl);
+    if (_ms_os_config.rt_priority_lc < 1) {
+      _ms_os_config.rt_priority_lc = 1;
+    }
+  }
+  _ms_os_config.rt_group_enable = _ms_is_true(getenv("LF_MS_OS_RT_GROUP_ENABLE"));
+
+  _ms_os_config.hc_guard_enabled = _ms_is_true(getenv("LF_MS_HC_GUARD_ENABLE"));
+  const char* hgl = getenv("LF_MS_HC_GUARD_LAG_NS");
+  if (hgl != NULL && hgl[0] != '\0') {
+    _ms_os_config.hc_guard_lag_ns = (int64_t)strtoll(hgl, NULL, 10);
+  }
+  const char* hgrq = getenv("LF_MS_HC_GUARD_READY_Q_LEN");
+  if (hgrq != NULL && hgrq[0] != '\0') {
+    _ms_os_config.hc_guard_ready_q_len = atoi(hgrq);
+  }
+
+  _ms_partition_enabled = _ms_is_true(getenv("LF_MS_WORKER_PARTITION_ENABLE"));
+  _ms_minimal_log = _ms_is_true(getenv("LF_MS_MINIMAL_LOG"));
+  _ms_partition_hc_workers = 0;
+  const char* phc = getenv("LF_MS_HC_WORKERS");
+  if (phc != NULL && phc[0] != '\0') {
+    _ms_partition_hc_workers = atoi(phc);
+    if (_ms_partition_hc_workers < 0) {
+      _ms_partition_hc_workers = 0;
+    }
+  }
+
+  _ms_logf(
+      MS_LEVEL_INFO,
+      "event=os_config enabled=%d rt_enabled=%d rt_group=%d lag_ns=%lld ready_q_len=%d lc_base_nice=%d nice_delta=%d hc_nice=%d rt_prio_hc=%d rt_prio_lc=%d min_switch_ns=%lld partition=%d hc_workers=%d allow_mixed=%d hc_guard=%d hc_guard_lag=%lld hc_guard_ready_q=%d",
+      _ms_os_config.enabled ? 1 : 0,
+      _ms_os_config.rt_enabled ? 1 : 0,
+      _ms_os_config.rt_group_enable ? 1 : 0,
+      (long long)_ms_os_config.lag_threshold_ns,
+      _ms_os_config.ready_q_len_threshold,
+      _ms_os_config.lc_base_nice_delta,
+      _ms_os_config.nice_delta_low,
+      _ms_os_config.hc_nice_delta,
+      _ms_os_config.rt_priority_hc,
+      _ms_os_config.rt_priority_lc,
+      (long long)_ms_os_config.min_switch_interval_ns,
+      _ms_partition_enabled,
+      _ms_partition_hc_workers,
+      _ms_os_config.allow_mixed_workers ? 1 : 0,
+      _ms_os_config.hc_guard_enabled ? 1 : 0,
+      (long long)_ms_os_config.hc_guard_lag_ns,
+      _ms_os_config.hc_guard_ready_q_len
+  );
 }
 
 static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
@@ -567,6 +679,7 @@ void ms_register_worker(const ms_worker_info_t* info) {
 
 void ms_report(const ms_report_t* report) {
   if (report == NULL) return;
+  if (_ms_minimal_log) return;
 
   // Rate limit to avoid perturbing runtime for each worker.
   const int64_t now = _ms_now_mono_ns();
@@ -685,11 +798,13 @@ void ms_on_reaction_ready(
       return;
     }
 
-    _ms_logf(
-        MS_LEVEL_DEBUG,
-        "event=ready env=%d reaction_index=%llu logical=%lld deadline=%lld is_input=%d updated=%d",
-        env_id, (unsigned long long)reaction_index, logical_time_ns, deadline_ns, is_input, updated
-    );
+    if (!_ms_minimal_log) {
+      _ms_logf(
+          MS_LEVEL_DEBUG,
+          "event=ready env=%d reaction_index=%llu logical=%lld deadline=%lld is_input=%d updated=%d",
+          env_id, (unsigned long long)reaction_index, logical_time_ns, deadline_ns, is_input, updated
+      );
+    }
 
     if (degraded) {
       _ms_logf(
@@ -707,14 +822,14 @@ long long ms_pick_next(
     int worker_id,
     long long logical_time_ns
 ) {
-    (void)worker_id;
-
     if (!_ms_enabled) return -1;
     if (_ms_observe_only) {
-      _ms_logf(
-          MS_LEVEL_INFO,
-          "event=pick_next env=%d candidate=-1 reason=observe_only logical=%lld",
-          env_id, logical_time_ns);
+      if (!_ms_minimal_log) {
+        _ms_logf(
+            MS_LEVEL_INFO,
+            "event=pick_next env=%d candidate=-1 reason=observe_only logical=%lld",
+            env_id, logical_time_ns);
+      }
       return -1;
     }
 
@@ -722,11 +837,27 @@ long long ms_pick_next(
     int has_candidate = 0;
     int64_t candidate_deadline = 0;
     int64_t candidate_ready = 0;
+    uint64_t fallback_candidate = 0;
+    int has_fallback_candidate = 0;
+    int64_t fallback_deadline = 0;
+    int64_t fallback_ready = 0;
+    uint64_t hc_candidate = 0;
+    int has_hc_candidate = 0;
+    int64_t hc_deadline = 0;
+    int64_t hc_ready = 0;
+    int force_hc_guard = 0;
     const int64_t now_mono_ns = _ms_now_mono_ns();
+    const ms_criticality_t target_crit = _ms_worker_target_crit(worker_id);
+    const int partition_enabled = _ms_partition_enabled;
 
     pthread_mutex_lock(&_ms_lock);
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
+      if (_ms_os_config.hc_guard_enabled &&
+          env_id >= 0 && env_id < MS_MAX_ENVS &&
+          _ms_env_pressure[env_id]) {
+        force_hc_guard = 1;
+      }
       if (set != NULL) {
         int i = 0;
         while (i < set->count) {
@@ -784,35 +915,78 @@ long long ms_pick_next(
             continue;
           }
 
-          if (!has_candidate ||
-              entry->deadline_ns < candidate_deadline ||
-              (entry->deadline_ns == candidate_deadline &&
-               entry->ready_time_ns < candidate_ready)) {
-            candidate = entry->reaction_index;
-            candidate_deadline = entry->deadline_ns;
-            candidate_ready = entry->ready_time_ns;
-            has_candidate = 1;
+          ms_criticality_t entry_crit = MS_CRIT_HIGH;
+          if (pol != NULL) {
+            entry_crit = pol->criticality;
+          }
+
+          if (!has_fallback_candidate ||
+              entry->deadline_ns < fallback_deadline ||
+              (entry->deadline_ns == fallback_deadline &&
+               entry->ready_time_ns < fallback_ready)) {
+            fallback_candidate = entry->reaction_index;
+            fallback_deadline = entry->deadline_ns;
+            fallback_ready = entry->ready_time_ns;
+            has_fallback_candidate = 1;
+          }
+
+          if (entry_crit == MS_CRIT_HIGH) {
+            if (!has_hc_candidate ||
+                entry->deadline_ns < hc_deadline ||
+                (entry->deadline_ns == hc_deadline &&
+                 entry->ready_time_ns < hc_ready)) {
+              hc_candidate = entry->reaction_index;
+              hc_deadline = entry->deadline_ns;
+              hc_ready = entry->ready_time_ns;
+              has_hc_candidate = 1;
+            }
+          }
+
+          if (!partition_enabled || entry_crit == target_crit) {
+            if (!has_candidate ||
+                entry->deadline_ns < candidate_deadline ||
+                (entry->deadline_ns == candidate_deadline &&
+                 entry->ready_time_ns < candidate_ready)) {
+              candidate = entry->reaction_index;
+              candidate_deadline = entry->deadline_ns;
+              candidate_ready = entry->ready_time_ns;
+              has_candidate = 1;
+            }
           }
           i++;
+        }
+        if (force_hc_guard && has_hc_candidate) {
+          candidate = hc_candidate;
+          candidate_deadline = hc_deadline;
+          candidate_ready = hc_ready;
+          has_candidate = 1;
+        }
+        if (!has_candidate && has_fallback_candidate) {
+          candidate = fallback_candidate;
+          candidate_deadline = fallback_deadline;
+          candidate_ready = fallback_ready;
+          has_candidate = 1;
         }
         set->last_pick_reaction_index = has_candidate ? (long long)candidate : -1;
       }
     }
     pthread_mutex_unlock(&_ms_lock);
 
-    if (has_candidate) {
-      _ms_logf(
-          MS_LEVEL_DEBUG,
-          "event=pick_next env=%d candidate=%llu reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
-          env_id, (unsigned long long)candidate, (long long)candidate_deadline,
-          (long long)candidate_ready, logical_time_ns
-      );
-    } else {
-      _ms_logf(
-          MS_LEVEL_DEBUG,
-          "event=pick_next env=%d candidate=-1 reason=empty logical=%lld",
-          env_id, logical_time_ns
-      );
+    if (!_ms_minimal_log) {
+      if (has_candidate) {
+        _ms_logf(
+            MS_LEVEL_DEBUG,
+            "event=pick_next env=%d candidate=%llu reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
+            env_id, (unsigned long long)candidate, (long long)candidate_deadline,
+            (long long)candidate_ready, logical_time_ns
+        );
+      } else {
+        _ms_logf(
+            MS_LEVEL_DEBUG,
+            "event=pick_next env=%d candidate=-1 reason=empty logical=%lld",
+            env_id, logical_time_ns
+        );
+      }
     }
 
     // Phase 3: return explicit candidate when available to avoid runtime stall.
@@ -857,6 +1031,11 @@ void ms_on_reaction_start(
       if (pol != NULL && worker_id >= 0 && worker_id < MS_MAX_WORKERS) {
         _ms_worker_last_crit[worker_id] = pol->criticality;
         _ms_worker_crit_known[worker_id] = 1;
+        if (pol->criticality == MS_CRIT_HIGH) {
+          _ms_worker_crit_mask[worker_id] |= 0x1;
+        } else if (pol->criticality == MS_CRIT_LOW) {
+          _ms_worker_crit_mask[worker_id] |= 0x2;
+        }
       }
       if (pol != NULL && _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT && pol->budget >= 0) {
         skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
@@ -872,19 +1051,21 @@ void ms_on_reaction_start(
     }
     pthread_mutex_unlock(&_ms_lock);
 
-    _ms_logf(
-        MS_LEVEL_DEBUG,
-        "event=runtime_selected env=%d reaction_index=%llu physical=%lld ready_found=%d",
-        env_id, (unsigned long long)reaction_index, physical_time_ns, found
-    );
-
-    if (!found) {
+    if (!_ms_minimal_log) {
       _ms_logf(
-          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld skip_expected=%d",
-          env_id, (unsigned long long)reaction_index, physical_time_ns
-          , skip_expected
+          MS_LEVEL_DEBUG,
+          "event=runtime_selected env=%d reaction_index=%llu physical=%lld ready_found=%d",
+          env_id, (unsigned long long)reaction_index, physical_time_ns, found
       );
+
+      if (!found) {
+        _ms_logf(
+            skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
+            "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld skip_expected=%d",
+            env_id, (unsigned long long)reaction_index, physical_time_ns
+            , skip_expected
+        );
+      }
     }
 
     if (last_pick >= 0 && (uint64_t)last_pick != reaction_index) {
@@ -940,7 +1121,7 @@ void ms_on_reaction_end(
     }
     pthread_mutex_unlock(&_ms_lock);
 
-    if (!removed) {
+    if (!removed && !_ms_minimal_log) {
       _ms_logf(
           skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
           "event=ready_missing_on_end env=%d reaction_index=%llu skip_expected=%d",
@@ -958,12 +1139,22 @@ void ms_on_metrics(
     int64_t ptdv_ns
 ) {
   (void)env_id;
-  (void)now_ns;
   (void)ptdv_ns;
 
   if (!_ms_enabled) return;
   if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return;
 
+  ms_criticality_t crit = MS_CRIT_HIGH;
+  int desired_delta = 0;
+  const int64_t now_mono_ns = (now_ns > 0) ? (int64_t)now_ns : _ms_now_mono_ns();
+  ms_os_policy_t policy = {
+    .nice_delta = 0,
+    .sched_policy = MS_SCHED_KEEP,
+    .rt_priority = 0,
+    .affinity_mask = 0
+  };
+
+  pthread_mutex_lock(&_ms_lock);
   int ready_len = ready_q_len;
   if (ready_len < 0) {
     ms_ready_set_t* ready_set = _ms_get_ready_set(env_id);
@@ -982,28 +1173,74 @@ void ms_on_metrics(
       ready_len >= _ms_os_config.ready_q_len_threshold) {
     pressure = 1;
   }
+  int hc_guard_pressure = 0;
+  if (_ms_os_config.hc_guard_lag_ns >= 0 && lag_ns >= _ms_os_config.hc_guard_lag_ns) {
+    hc_guard_pressure = 1;
+  }
+  if (_ms_os_config.hc_guard_ready_q_len >= 0 && ready_len >= 0 &&
+      ready_len >= _ms_os_config.hc_guard_ready_q_len) {
+    hc_guard_pressure = 1;
+  }
 
-  ms_criticality_t crit = MS_CRIT_HIGH;
-  int desired_delta = 0;
-  ms_os_policy_t policy = {
-    .nice_delta = 0,
-    .sched_policy = MS_SCHED_KEEP,
-    .rt_priority = 0,
-    .affinity_mask = 0
-  };
-
-  pthread_mutex_lock(&_ms_lock);
+  if (env_id >= 0 && env_id < MS_MAX_ENVS) {
+    _ms_env_pressure[env_id] = hc_guard_pressure;
+  }
+  const int mixed_criticality_worker =
+      !_ms_partition_enabled && ((_ms_worker_crit_mask[worker_id] & 0x3) == 0x3);
   if (_ms_worker_crit_known[worker_id]) {
     crit = _ms_worker_last_crit[worker_id];
   }
-  if (pressure && crit == MS_CRIT_LOW) {
-    desired_delta = _ms_os_config.nice_delta_low;
+  if (_ms_partition_enabled) {
+    crit = _ms_worker_target_crit(worker_id);
   }
-  if (desired_delta == _ms_worker_last_nice_delta[worker_id]) {
+  if (!_ms_partition_enabled && !_ms_os_config.allow_mixed_workers) {
+    desired_delta = 0;
+  } else if (!mixed_criticality_worker && crit == MS_CRIT_LOW) {
+    desired_delta = _ms_os_config.lc_base_nice_delta;
+    if (pressure) {
+      desired_delta += _ms_os_config.nice_delta_low;
+    }
+    if (_ms_os_config.rt_enabled && _ms_os_config.rt_group_enable) {
+      policy.sched_policy = MS_SCHED_FIFO;
+      policy.rt_priority = _ms_os_config.rt_priority_lc;
+    }
+  } else if (!mixed_criticality_worker && crit == MS_CRIT_HIGH) {
+    if (_ms_os_config.rt_enabled && _ms_os_config.rt_group_enable) {
+      desired_delta = 0;
+      policy.sched_policy = MS_SCHED_FIFO;
+      policy.rt_priority = _ms_os_config.rt_priority_hc;
+    } else {
+      if (pressure) {
+        desired_delta = _ms_os_config.hc_nice_delta;
+        if (_ms_os_config.rt_enabled) {
+          policy.sched_policy = MS_SCHED_FIFO;
+          policy.rt_priority = _ms_os_config.rt_priority_hc;
+        }
+      } else {
+        desired_delta = 0;
+        if (_ms_os_config.rt_enabled) {
+          policy.sched_policy = MS_SCHED_OTHER;
+          policy.rt_priority = 0;
+        }
+      }
+    }
+  }
+  if (desired_delta == _ms_worker_last_nice_delta[worker_id] &&
+      (int)policy.sched_policy == _ms_worker_last_sched_policy[worker_id] &&
+      policy.rt_priority == _ms_worker_last_rt_priority[worker_id]) {
+    pthread_mutex_unlock(&_ms_lock);
+    return;
+  }
+  if (_ms_os_config.min_switch_interval_ns > 0 &&
+      _ms_worker_last_nice_switch_ns[worker_id] > 0 &&
+      (now_mono_ns - _ms_worker_last_nice_switch_ns[worker_id]) < _ms_os_config.min_switch_interval_ns) {
     pthread_mutex_unlock(&_ms_lock);
     return;
   }
   _ms_worker_last_nice_delta[worker_id] = desired_delta;
+  _ms_worker_last_sched_policy[worker_id] = (int)policy.sched_policy;
+  _ms_worker_last_rt_priority[worker_id] = policy.rt_priority;
+  _ms_worker_last_nice_switch_ns[worker_id] = now_mono_ns;
 
   policy.nice_delta = desired_delta;
   if (!_ms_os_config.enabled) {

@@ -32,10 +32,13 @@ compile_lf() {
 find_exe() {
   local name="$1"
   local exe
-  for exe in "${ROOT_DIR}/bin/${name}" \
-             "${ROOT_DIR}/bin/${name}.exe" \
+  for exe in "${ROOT_DIR}/src-gen/ms-eval/lf-gen/${name}/build/${name}" \
+             "${ROOT_DIR}/src-gen/ms-eval/lf-gen/${name}/${name}" \
              "${ROOT_DIR}/src-gen/${name}/${name}" \
-             "${ROOT_DIR}/src-gen/${name}/bin/${name}"; do
+             "${ROOT_DIR}/src-gen/${name}/build/${name}" \
+             "${ROOT_DIR}/src-gen/${name}/bin/${name}" \
+             "${ROOT_DIR}/bin/${name}" \
+             "${ROOT_DIR}/bin/${name}.exe"; do
     if [[ -x "$exe" ]]; then
       echo "$exe"
       return 0
@@ -51,13 +54,21 @@ run_program() {
   local log_dir="$2"
   local app_log="$log_dir/app.jsonl"
   local ms_log="$log_dir/ms.log"
+  local run_prefix="${LF_RUN_PREFIX:-}"
   mkdir -p "$log_dir"
 
   local exe
   exe=$(find_exe "$name") || fail "could not find executable for ${name} (expected in bin/ or src-gen/)"
 
-  LF_APP_LOG="$app_log" \
-  LF_MS_LOG="$ms_log" \
-  LF_MS_LOG_LEVEL="INFO" \
-  "$exe"
+  if [[ -n "$run_prefix" ]]; then
+    LF_APP_LOG="$app_log" \
+    LF_MS_LOG="$ms_log" \
+    LF_MS_LOG_LEVEL="${LF_MS_LOG_LEVEL:-INFO}" \
+    bash -lc "${run_prefix} \"$exe\""
+  else
+    LF_APP_LOG="$app_log" \
+    LF_MS_LOG="$ms_log" \
+    LF_MS_LOG_LEVEL="${LF_MS_LOG_LEVEL:-INFO}" \
+    "$exe"
+  fi
 }

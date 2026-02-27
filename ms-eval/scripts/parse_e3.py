@@ -11,6 +11,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--logs", default="ms-eval/logs/e3")
     ap.add_argument("--out", default="ms-eval/results/e3_missrate.csv")
+    ap.add_argument("--drop-initial-tags", type=int, default=0)
     args = ap.parse_args()
 
     log_root = Path(args.logs)
@@ -29,17 +30,25 @@ def main() -> None:
         load_factor = config.get("load_factor", 1.0)
 
         app_events = list(read_jsonl(app_log))
-        misses_hc = 0
-        total_hc = 0
+        hc_events = []
         for e in app_events:
             if e.get("type") != "reaction_end":
                 continue
             rid = int(e.get("reaction_id", -1))
             if rid < 0 or rid >= hc:
                 continue
-            total_hc += 1
-            if int(e.get("missed_deadline", 0)) == 1:
-                misses_hc += 1
+            logical_time_ns = int(e.get("logical_time_ns", -1))
+            missed = int(e.get("missed_deadline", 0))
+            hc_events.append((logical_time_ns, missed))
+
+        if args.drop_initial_tags > 0 and hc_events:
+            tags = sorted({t for (t, _) in hc_events if t >= 0})
+            if 0 < args.drop_initial_tags < len(tags):
+                threshold = tags[args.drop_initial_tags]
+                hc_events = [(t, m) for (t, m) in hc_events if t >= threshold]
+
+        total_hc = len(hc_events)
+        misses_hc = sum(1 for (_, missed) in hc_events if missed == 1)
 
         ms_events = parse_ms_log(ms_log)
         degraded = 0

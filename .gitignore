@@ -6,6 +6,12 @@
 **/.DS_Store
 /core/federated/RTI/build/
 /cmake-build-debug/
+/src-gen/
+/bin/
+/include/e1_microbench_N*/
+/ms-eval/logs/
+/ms-eval/lf-gen/
+/ms-eval/scripts/__pycache__/
 
 # Generated trace files
 *.lft

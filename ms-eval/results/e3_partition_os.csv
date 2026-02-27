@@ -1,0 +1,17 @@
+mode,load_factor,steps,hc_miss_rate,lc_degraded_count,fallback_count,violations
+baseline,0.20,200,97.250,0,0,0
+baseline,0.40,200,96.250,0,0,0
+baseline,0.60,200,96.250,0,0,0
+baseline,0.80,200,96.500,0,0,0
+baseline,1.00,200,96.250,0,0,0
+baseline,1.20,200,96.250,0,0,0
+baseline,1.40,200,96.500,0,0,0
+baseline,1.60,200,97.750,0,0,0
+degrade,0.20,200,96.250,0,0,0
+degrade,0.40,200,95.375,0,0,0
+degrade,0.60,200,96.250,0,0,0
+degrade,0.80,200,96.750,0,0,0
+degrade,1.00,200,98.375,0,0,0
+degrade,1.20,200,95.750,0,0,0
+degrade,1.40,200,97.000,0,0,0
+degrade,1.60,200,96.000,0,0,0

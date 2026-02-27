@@ -22,6 +22,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sched.h>
 
 #include "lf_types.h"
 #include "low_level_platform.h"
@@ -49,7 +50,38 @@ reaction_t* lf_sched_requeue_current_and_pick_by_index(
     reaction_t* current,
     uint64_t reaction_index
 );
+reaction_t* lf_sched_requeue_current_and_pick_by_key(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_key
+);
 #endif
+
+static inline uint64_t _ms_hash_str64(const char* s) {
+  uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit offset basis
+  if (s == NULL) return h;
+  while (*s) {
+    h ^= (uint8_t)(*s++);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
+  if (reaction == NULL) return 0;
+  const char* instance = NULL;
+  if (reaction->self != NULL) {
+    instance = lf_reactor_full_name((self_base_t*)reaction->self);
+  }
+  if (instance != NULL && instance[0] != '\0') {
+    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  if (reaction->name != NULL && reaction->name[0] != '\0') {
+    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
+}
 
 /**
  * The maximum amount of time a worker thread should stall
@@ -70,6 +102,12 @@ typedef struct {
   int base_nice;
   int last_valid;
   int last_nice;
+  int sched_base_valid;
+  int sched_base_policy;
+  int sched_base_prio;
+  int sched_last_valid;
+  int sched_last_policy;
+  int sched_last_prio;
 } ms_os_worker_state_t;
 
 static ms_os_worker_state_t _ms_os_worker_state[MS_OS_MAX_WORKERS];
@@ -97,7 +135,11 @@ static int _ms_os_read_nice(int id, int* nice_out) {
 }
 
 // Return 0 on applied, 1 on no-op (already applied), -1 on failure.
-static int _ms_os_apply_nice(int worker_id, int nice_delta, int* applied_nice) {
+static int _ms_os_apply_policy(int worker_id, const ms_os_policy_t* policy_in, int* applied_nice) {
+  if (policy_in == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
   if (worker_id < 0 || worker_id >= MS_OS_MAX_WORKERS) {
     errno = EINVAL;
     return -1;
@@ -105,6 +147,11 @@ static int _ms_os_apply_nice(int worker_id, int nice_delta, int* applied_nice) {
 
   const int id = _ms_os_target_id();
   ms_os_worker_state_t* state = &_ms_os_worker_state[worker_id];
+  int changed = 0;
+  int rc = 0;
+  int desired_nice = 0;
+  int desired_sched = SCHED_OTHER;
+  int desired_prio = 0;
 
   if (!state->base_valid) {
     if (_ms_os_read_nice(id, &state->base_nice) != 0) {
@@ -113,19 +160,79 @@ static int _ms_os_apply_nice(int worker_id, int nice_delta, int* applied_nice) {
     state->base_valid = 1;
   }
 
-  int desired = _ms_os_clamp_nice(state->base_nice + nice_delta);
-  if (state->last_valid && state->last_nice == desired) {
-    if (applied_nice != NULL) *applied_nice = desired;
-    return 1;
+  desired_nice = _ms_os_clamp_nice(state->base_nice + policy_in->nice_delta);
+  if (!state->last_valid || state->last_nice != desired_nice) {
+    if (setpriority(PRIO_PROCESS, id, desired_nice) != 0) {
+      return -1;
+    }
+    state->last_valid = 1;
+    state->last_nice = desired_nice;
+    changed = 1;
+  }
+  if (applied_nice != NULL) *applied_nice = desired_nice;
+
+  switch (policy_in->sched_policy) {
+    case MS_SCHED_KEEP:
+      return changed ? 0 : 1;
+    case MS_SCHED_OTHER:
+      desired_sched = SCHED_OTHER;
+      desired_prio = 0;
+      break;
+    case MS_SCHED_FIFO:
+      desired_sched = SCHED_FIFO;
+      desired_prio = policy_in->rt_priority;
+      break;
+    case MS_SCHED_RR:
+      desired_sched = SCHED_RR;
+      desired_prio = policy_in->rt_priority;
+      break;
+    default:
+      errno = EINVAL;
+      return -1;
   }
 
-  if (setpriority(PRIO_PROCESS, id, desired) != 0) {
+  if (!state->sched_base_valid) {
+    errno = 0;
+    int p = sched_getscheduler(id);
+    if (p < 0) {
+      return -1;
+    }
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    rc = sched_getparam(id, &sp);
+    if (rc != 0) {
+      return -1;
+    }
+    state->sched_base_policy = p;
+    state->sched_base_prio = sp.sched_priority;
+    state->sched_base_valid = 1;
+  }
+
+  if ((desired_sched == SCHED_FIFO || desired_sched == SCHED_RR)) {
+    const int pmin = sched_get_priority_min(desired_sched);
+    const int pmax = sched_get_priority_max(desired_sched);
+    if (desired_prio < pmin) desired_prio = pmin;
+    if (desired_prio > pmax) desired_prio = pmax;
+  } else {
+    desired_prio = 0;
+  }
+
+  if (state->sched_last_valid &&
+      state->sched_last_policy == desired_sched &&
+      state->sched_last_prio == desired_prio) {
+    return changed ? 0 : 1;
+  }
+
+  struct sched_param param;
+  memset(&param, 0, sizeof(param));
+  param.sched_priority = desired_prio;
+  rc = sched_setscheduler(id, desired_sched, &param);
+  if (rc != 0) {
     return -1;
   }
-
-  state->last_valid = 1;
-  state->last_nice = desired;
-  if (applied_nice != NULL) *applied_nice = desired;
+  state->sched_last_valid = 1;
+  state->sched_last_policy = desired_sched;
+  state->sched_last_prio = desired_prio;
   return 0;
 }
 
@@ -911,7 +1018,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
     ms_os_policy_t policy;
     if (ms_take_os_policy(worker_number, &policy)) {
       int applied_nice = 0;
-      int rc = _ms_os_apply_nice(worker_number, policy.nice_delta, &applied_nice);
+      int rc = _ms_os_apply_policy(worker_number, &policy, &applied_nice);
       if (rc == 0) {
         ms_log_os_policy_apply(worker_number, &policy, applied_nice);
       } else if (rc > 0) {
@@ -928,7 +1035,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
 
   // Notify execution start
-  ms_on_reaction_start(env->id, worker_number, (uint64_t)reaction->index, (long long)lf_time_physical());
+  ms_on_reaction_start(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical());
 
   _lf_invoke_reaction(env, reaction, worker_number);
 
@@ -936,7 +1043,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
   schedule_output_reactions(env, reaction, worker_number);
 
   // Notify execution end
-  ms_on_reaction_end(env->id, worker_number, (uint64_t)reaction->index, (long long)lf_time_physical(), 0);
+  ms_on_reaction_end(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical(), 0);
 
   reaction->is_STP_violated = false;
 }
@@ -967,10 +1074,11 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
     long long pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+    const uint64_t current_key = _ms_reaction_stable_key(current_reaction_to_execute);
 #if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
     if (pick >= 0 && current_reaction_to_execute != NULL &&
-        (uint64_t)pick != (uint64_t)current_reaction_to_execute->index) {
-      reaction_t* picked = lf_sched_requeue_current_and_pick_by_index(
+        (uint64_t)pick != current_key) {
+      reaction_t* picked = lf_sched_requeue_current_and_pick_by_key(
           env->scheduler, worker_number, current_reaction_to_execute, (uint64_t)pick);
       if (picked != NULL) {
         current_reaction_to_execute = picked;
