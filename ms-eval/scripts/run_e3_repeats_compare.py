@@ -63,7 +63,8 @@ def os_apply_counts(ts: str, loads: list[float]) -> dict:
 def run_one(mode: str, loads: list[float], steps: int, workers: int, hc_workers: int,
             hc: int, lc: int, hc_work: int, lc_work: int, deadline: int,
             stress_cpu: int, stress_load: int, stress_timeout_s: int,
-            stress_warmup_s: int, skip_compile: bool) -> RunResult:
+            stress_warmup_s: int, lf_cpu_set: str, stress_cpu_set: str,
+            container_cpuset: str, skip_compile: bool) -> RunResult:
     load_s = ','.join(str(x) for x in loads)
     part = 1 if mode == 'partitioned' else 0
     common = (
@@ -71,8 +72,20 @@ def run_one(mode: str, loads: list[float], steps: int, workers: int, hc_workers:
         'LF_MS_OS_MIN_SWITCH_NS=0 '
         f'LF_MS_WORKER_PARTITION_ENABLE={part} LF_MS_HC_WORKERS={hc_workers}'
     )
+    run_e3_opts = (
+        f'--stress-cpu {stress_cpu} --stress-load {stress_load} '
+        f'--stress-timeout-s {stress_timeout_s} --stress-warmup-s {stress_warmup_s} '
+        f'--skip-compile {1 if skip_compile else 0}'
+    )
+    if lf_cpu_set:
+        run_e3_opts += f' --lf-cpu-set {lf_cpu_set}'
+    if stress_cpu_set:
+        run_e3_opts += f' --stress-cpu-set {stress_cpu_set}'
+    docker_opts = ''
+    if container_cpuset:
+        docker_opts += f' --cpuset-cpus {container_cpuset}'
     cmd = (
-        'docker run --rm -t '
+        f'docker run --rm -t{docker_opts} '
         f'-v {ROOT}:/workspace/reactor-c '
         '-w /workspace/reactor-c lf-ms-phase4:latest '
         'bash -lc "set -e; '
@@ -81,9 +94,7 @@ def run_one(mode: str, loads: list[float], steps: int, workers: int, hc_workers:
         f'--steps {steps} --hc-work-us {hc_work} --lc-work-us {lc_work} '
         f'--hc-deadline-us {deadline} --lc-deadline-us {deadline} '
         f'--period-us 1000 --load-factors {load_s} '
-        f'--stress-cpu {stress_cpu} --stress-load {stress_load} --stress-timeout-s {stress_timeout_s} '
-        f'--stress-warmup-s {stress_warmup_s} '
-        f'--skip-compile {1 if skip_compile else 0}; '
+        f'{run_e3_opts}; '
         '"'
     )
     out = run_cmd(cmd)
@@ -134,10 +145,13 @@ def main() -> None:
     ap.add_argument('--hc-work-us', type=int, default=40)
     ap.add_argument('--lc-work-us', type=int, default=120)
     ap.add_argument('--deadline-us', type=int, default=10000)
-    ap.add_argument('--stress-cpu', type=int, default=0)
-    ap.add_argument('--stress-load', type=int, default=85)
-    ap.add_argument('--stress-timeout-s', type=int, default=120)
-    ap.add_argument('--stress-warmup-s', type=int, default=2)
+    ap.add_argument('--stress-cpu', type=int, default=1)
+    ap.add_argument('--stress-load', type=int, default=80)
+    ap.add_argument('--stress-timeout-s', type=int, default=360)
+    ap.add_argument('--stress-warmup-s', type=int, default=3)
+    ap.add_argument('--container-cpuset', default='0-3')
+    ap.add_argument('--lf-cpu-set', default='0-1')
+    ap.add_argument('--stress-cpu-set', default='2')
     ap.add_argument('--out-prefix', default='e3_repeat_compare')
     args = ap.parse_args()
 
@@ -149,11 +163,13 @@ def main() -> None:
         mixed = run_one('mixed', loads, args.steps, args.workers, 0,
                         args.hc, args.lc, args.hc_work_us, args.lc_work_us, args.deadline_us,
                         args.stress_cpu, args.stress_load, args.stress_timeout_s, args.stress_warmup_s,
+                        args.lf_cpu_set, args.stress_cpu_set, args.container_cpuset,
                         compiled_once)
         compiled_once = True
         part = run_one('partitioned', loads, args.steps, args.workers, args.hc_workers,
                        args.hc, args.lc, args.hc_work_us, args.lc_work_us, args.deadline_us,
                        args.stress_cpu, args.stress_load, args.stress_timeout_s, args.stress_warmup_s,
+                       args.lf_cpu_set, args.stress_cpu_set, args.container_cpuset,
                        compiled_once)
 
         for L in loads:

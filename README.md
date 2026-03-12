@@ -1,29 +1,43 @@
-[![CI](https://github.com/lf-lang/reactor-c/actions/workflows/ci.yml/badge.svg)](https://github.com/lf-lang/reactor-c/actions/workflows/ci.yml)
-[![API docs](https://github.com/lf-lang/reactor-c/actions/workflows/api-docs.yml/badge.svg)](https://github.com/lf-lang/reactor-c/actions/workflows/api-docs.yml)
+# Master Scheduler for Lingua Franca (Paper-Oriented README)
 
-# README
+## Repository Positioning
 
-The reactor-c runtime system for Lingua Franca is the system used when you specify as your target `C` or `CCpp`.
-The [documentation here](https://lf-lang.org/reactor-c) is generated automatically from the C source code using [Doxygen](https://doxygen.nl).
-Higher-level user documentation and getting-started information can be found on the
-[lf-lang.org website](https://lf-lang.org/docs/next?target-languages=c),
-with details about the C runtime on the
-[target language details](https://lf-lang.org/docs/next/reference/target-language-details?target-languages=c)
-page.
+- This repository contains the implementation and evaluation code for a **user-space Master Scheduler (MS)** on the Lingua Franca (LF) C runtime.
+- The goal is to introduce staged control capabilities (observation, intervention, degradation, OS-level coordination) while **preserving LF logical-time semantics**.
+- It serves as the implementation/evaluation artifact base for the current paper draft (`TechnicalPaper-MS-v1.1.pdf`).
 
-When you specify
+## Paper Positioning (Key Points)
 
-```
-target C
-```
-then a C compiler (such as `gcc`) will be used.
-If you specify
+- The MS intervenes only at the LF runtime ready-set boundary to avoid violating deterministic reactive semantics.
+- The design is deployable in user space without kernel/RTOS/hypervisor modifications.
+- Overload handling (degradation and OS policy actions) is explicitly observable via structured logs.
+- The evaluation focuses on:
+  - E1: MS runtime overhead
+  - E2: high-criticality deadline miss-rate comparison across baseline and MS+RT conditions
 
-```
-target CCpp
-```
-Then a C++ compiler (such as `g++`) will be used.
-In this case, your reaction bodies can written in C++ and you can include and link to C++ code.
-Unlike the Cpp target, you will still access the LF API through the C API documented here.
+## Current Status
 
+- We prepared this work for submission to **Reactive CPS (ReCPS) 2026**, but **missed the submission deadline**.
+- The implementation and evaluation framework are actively maintained for the next submission cycle.
+- ReCPS 2026 event page: [https://www.lf-lang.org/events/recps-2026/](https://www.lf-lang.org/events/recps-2026/)
 
+## Source Code and Tags
+
+- Repository: [https://github.com/ertlnagoya/reactor-c](https://github.com/ertlnagoya/reactor-c)
+- Current consolidated release tag: [v1.0](https://github.com/ertlnagoya/reactor-c/tree/v1.0)
+- MS implementation tag: [ms-v1.0](https://github.com/ertlnagoya/reactor-c/tree/ms-v1.0)
+- Evaluation code and artifacts tag: [ms-eval-v1.0](https://github.com/ertlnagoya/reactor-c/tree/ms-eval-v1.0)
+
+## Related Documents
+
+- Phase-by-phase implementation summary: `README_ms.md`
+- Reproducible performance evaluation procedure: `README_ms_performance_test.md`
+
+## Versioning Roadmap
+
+- We will continue iterative version upgrades with synchronized updates to code, experiments, and manuscript text.
+- Planned improvements include:
+  - stronger reproducibility of experiment settings and scripts
+  - improved statistical robustness of E1/E2
+  - tighter consistency among narrative, figures, and artifacts
+- We will keep publishing fixed tags so paper URLs remain stable and citable.
