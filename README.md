@@ -32,6 +32,7 @@
 
 - Phase-by-phase implementation summary: `README_ms.md`
 - Reproducible performance evaluation procedure: `README_ms_performance_test.md`
+- Main evaluation scripts and artifacts live under `ms-eval/`.
 
 ## Versioning Roadmap
 
@@ -41,3 +42,11 @@
   - improved statistical robustness of E1/E2
   - tighter consistency among narrative, figures, and artifacts
 - We will keep publishing fixed tags so paper URLs remain stable and citable.
+
+## Repository Notes
+
+- Generated LF outputs such as `src-gen/`, `bin/`, and temporary evaluation logs are not part of the maintained source history.
+- The maintained evaluation record is the combination of:
+  - scripts under `ms-eval/scripts/`
+  - selected result CSV files under `ms-eval/results/`
+  - selected manuscript figures under `ms-eval/figures/`
