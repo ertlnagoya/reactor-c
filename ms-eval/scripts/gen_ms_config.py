@@ -13,6 +13,7 @@ def main() -> None:
     ap.add_argument("--degrade-action", default="skip")
     ap.add_argument("--budget-type", default="reaction_count")
     ap.add_argument("--reaction-indices", default="")
+    ap.add_argument("--extra-high-indices", default="")
     args = ap.parse_args()
 
     out_path = Path(args.out)
@@ -37,8 +38,16 @@ def main() -> None:
 
     for rid in range(args.hc + args.lc):
         crit = "high" if rid < args.hc else "low"
-        budget = -1 if crit == "high" else args.lc_budget
-        lines.append(f"reaction,0,{reaction_indices[rid]},{crit},{budget}")
+        degradable = "false" if crit == "high" else "true"
+        budget = -1
+        lines.append(f"reaction,0,{reaction_indices[rid]},{crit},{budget},{degradable}")
+
+    if args.extra_high_indices.strip():
+        for token in args.extra_high_indices.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            lines.append(f"reaction,0,{int(token)},high,-1,false")
 
     out_path.write_text("\n".join(lines) + "\n")
 

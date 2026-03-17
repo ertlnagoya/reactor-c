@@ -191,6 +191,10 @@ static int _ms_os_apply_policy(int worker_id, const ms_os_policy_t* policy_in, i
       return -1;
   }
 
+#if defined(__APPLE__)
+  // RT scheduler control is Linux-specific in this prototype.
+  return changed ? 0 : 1;
+#else
   if (!state->sched_base_valid) {
     errno = 0;
     int p = sched_getscheduler(id);
@@ -234,6 +238,7 @@ static int _ms_os_apply_policy(int worker_id, const ms_os_policy_t* policy_in, i
   state->sched_last_policy = desired_sched;
   state->sched_last_prio = desired_prio;
   return 0;
+#endif
 }
 
 void _lf_increment_tag_barrier_locked(environment_t* env, tag_t future_tag) {
@@ -1108,8 +1113,17 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #endif // FEDERATED_CENTRALIZED
 
     bool violation = _lf_worker_handle_violations(env, worker_number, current_reaction_to_execute);
-
+    bool degraded_skip = false;
     if (!violation) {
+      degraded_skip = ms_should_skip_reaction(
+          env->id,
+          worker_number,
+          _ms_reaction_stable_key(current_reaction_to_execute),
+          (long long)env->current_tag.time
+      );
+    }
+
+    if (!violation && !degraded_skip) {
       // Invoke the reaction function.
       _lf_worker_invoke_reaction(env, worker_number, current_reaction_to_execute);
     }

@@ -18,6 +18,8 @@ load_factors="1.0,1.5,2.0,2.5"
 lc_budget=4
 window_ns=1000000
 workers=4
+degrade_lag_ns=200000
+degrade_ready_q_len=2
 stress_cpu=0
 stress_load=85
 stress_timeout_s=60
@@ -42,6 +44,8 @@ while [[ $# -gt 0 ]]; do
     --lc-budget) lc_budget="$2"; shift 2;;
     --window-ns) window_ns="$2"; shift 2;;
     --workers) workers="$2"; shift 2;;
+    --degrade-lag-ns) degrade_lag_ns="$2"; shift 2;;
+    --degrade-ready-q-len) degrade_ready_q_len="$2"; shift 2;;
     --stress-cpu) stress_cpu="$2"; shift 2;;
     --stress-load) stress_load="$2"; shift 2;;
     --stress-timeout-s) stress_timeout_s="$2"; shift 2;;
@@ -73,6 +77,15 @@ lf_file="${EVAL_DIR}/lf-gen/e3_overload.lf"
 
 name="$(basename "$lf_file" .lf)"
 exe=""
+ms_patch_dir="$(mktemp -d "${ROOT_DIR}/.e3_runtime_patch.XXXXXX")"
+cp "${ROOT_DIR}/core/utils/master_scheduler.c" "${ms_patch_dir}/master_scheduler.c"
+cp "${ROOT_DIR}/include/core/utils/master_scheduler.h" "${ms_patch_dir}/master_scheduler.h"
+cp "${ROOT_DIR}/core/threaded/reactor_threaded.c" "${ms_patch_dir}/reactor_threaded.c"
+cp "${ROOT_DIR}/core/threaded/scheduler_NP.c" "${ms_patch_dir}/scheduler_NP.c"
+cp "${ROOT_DIR}/core/threaded/scheduler_adaptive.c" "${ms_patch_dir}/scheduler_adaptive.c"
+cp "${ROOT_DIR}/core/threaded/scheduler_GEDF_NP.c" "${ms_patch_dir}/scheduler_GEDF_NP.c"
+cp "${ROOT_DIR}/core/utils/CMakeLists.txt" "${ms_patch_dir}/core_utils_CMakeLists.txt"
+trap 'rm -rf "${ms_patch_dir}"' EXIT
 
 if [[ "$skip_compile" -eq 0 ]]; then
   compile_lf "$lf_file"
@@ -85,12 +98,15 @@ fi
 # implementation into that tree and rebuild so E3 uses the patched scheduler.
 gen_dir="${ROOT_DIR}/src-gen/ms-eval/lf-gen/${name}"
 if [[ "$skip_compile" -eq 0 && -d "${gen_dir}/core/utils" && -d "${gen_dir}/include/core/utils" && -d "${gen_dir}/core/threaded" ]]; then
-  cp "${ROOT_DIR}/core/utils/master_scheduler.c" "${gen_dir}/core/utils/master_scheduler.c"
-  cp "${ROOT_DIR}/include/core/utils/master_scheduler.h" "${gen_dir}/include/core/utils/master_scheduler.h"
-  cp "${ROOT_DIR}/core/threaded/reactor_threaded.c" "${gen_dir}/core/threaded/reactor_threaded.c"
-  cp "${ROOT_DIR}/core/threaded/scheduler_NP.c" "${gen_dir}/core/threaded/scheduler_NP.c"
-  cp "${ROOT_DIR}/core/threaded/scheduler_adaptive.c" "${gen_dir}/core/threaded/scheduler_adaptive.c"
-  cp "${ROOT_DIR}/core/threaded/scheduler_GEDF_NP.c" "${gen_dir}/core/threaded/scheduler_GEDF_NP.c"
+  mkdir -p "${ROOT_DIR}/include/core/utils"
+  cp "${ms_patch_dir}/master_scheduler.h" "${ROOT_DIR}/include/core/utils/master_scheduler.h"
+  cp "${ms_patch_dir}/core_utils_CMakeLists.txt" "${gen_dir}/core/utils/CMakeLists.txt"
+  cp "${ms_patch_dir}/master_scheduler.c" "${gen_dir}/core/utils/master_scheduler.c"
+  cp "${ms_patch_dir}/master_scheduler.h" "${gen_dir}/include/core/utils/master_scheduler.h"
+  cp "${ms_patch_dir}/reactor_threaded.c" "${gen_dir}/core/threaded/reactor_threaded.c"
+  cp "${ms_patch_dir}/scheduler_NP.c" "${gen_dir}/core/threaded/scheduler_NP.c"
+  cp "${ms_patch_dir}/scheduler_adaptive.c" "${gen_dir}/core/threaded/scheduler_adaptive.c"
+  cp "${ms_patch_dir}/scheduler_GEDF_NP.c" "${gen_dir}/core/threaded/scheduler_GEDF_NP.c"
   cmake --build "${gen_dir}/build" --target install --parallel "${build_jobs}"
   exe="$(find_exe "$name")"
 fi
@@ -188,8 +204,33 @@ else
   echo "derived rid-aligned reaction indices: ${REACTION_INDICES}" >&2
 fi
 
+EXTRA_HIGH_INDICES="$(
+  python3 - "$probe_ms_log" "${REACTION_INDICES}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+ms_path = Path(sys.argv[1])
+mapped = {int(x) for x in sys.argv[2].split(",") if x.strip()}
+if not ms_path.exists():
+    sys.exit(0)
+
+seen = []
+for line in ms_path.read_text(errors="ignore").splitlines():
+    m = re.search(r"event=runtime_selected env=0 reaction_index=([0-9]+)", line)
+    if not m:
+        continue
+    ridx = int(m.group(1))
+    if ridx not in seen:
+        seen.append(ridx)
+
+extras = [str(x) for x in seen if x not in mapped]
+print(",".join(extras))
+PY
+)"
+
 for L in "${LOAD_LIST[@]}"; do
-  for mode in baseline degrade; do
+  for mode in baseline ms degrade; do
     log_dir="${EVAL_DIR}/logs/e3/${timestamp}/${mode}/L${L}"
     mkdir -p "$log_dir"
     cat > "${log_dir}/run_config.json" <<JSON
@@ -199,7 +240,9 @@ for L in "${LOAD_LIST[@]}"; do
   "workers": ${workers},
   "steps": ${steps},
   "mode": "${mode}",
-  "load_factor": ${L}
+  "load_factor": ${L},
+  "degrade_lag_ns": ${degrade_lag_ns},
+  "degrade_ready_q_len": ${degrade_ready_q_len}
 }
 JSON
 
@@ -211,10 +254,19 @@ JSON
     if [[ "$mode" == "baseline" ]]; then
       export LF_MS_DISABLE=1
       export LF_MS_OBSERVE_ONLY=0
+      export LF_MS_DEGRADE_ENABLE=0
+      unset LF_MS_CONFIG
+    elif [[ "$mode" == "ms" ]]; then
+      export LF_MS_DISABLE=0
+      export LF_MS_OBSERVE_ONLY=0
+      export LF_MS_DEGRADE_ENABLE=0
       unset LF_MS_CONFIG
     else
       export LF_MS_DISABLE=0
       export LF_MS_OBSERVE_ONLY=0
+      export LF_MS_DEGRADE_ENABLE=1
+      export LF_MS_DEGRADE_LAG_NS="${degrade_lag_ns}"
+      export LF_MS_DEGRADE_READY_Q_LEN="${degrade_ready_q_len}"
       cfg="${log_dir}/ms_policy.cfg"
       "${EVAL_DIR}/scripts/gen_ms_config.py" \
         --out "$cfg" \
@@ -222,7 +274,8 @@ JSON
         --lc "$lc" \
         --lc-budget "$lc_budget" \
         --window-ns "$window_ns" \
-        --reaction-indices "${REACTION_INDICES}"
+        --reaction-indices "${REACTION_INDICES}" \
+        --extra-high-indices "${EXTRA_HIGH_INDICES}"
       export LF_MS_CONFIG="$cfg"
     fi
 

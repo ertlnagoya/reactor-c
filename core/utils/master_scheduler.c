@@ -68,6 +68,7 @@ typedef struct {
   int env_id;
   uint64_t reaction_index;
   ms_criticality_t criticality;
+  bool degradable;
   int64_t budget;
   int64_t window_start_mono_ns;
   int64_t used_in_window;
@@ -151,6 +152,10 @@ typedef struct {
 
 static ms_ready_set_t _ms_ready_sets[MS_MAX_ENVS];
 static int _ms_env_pressure[MS_MAX_ENVS] = {0};
+static int _ms_env_degrade_pressure[MS_MAX_ENVS] = {0};
+static bool _ms_degrade_enabled = false;
+static int64_t _ms_degrade_lag_threshold_ns = -1;
+static int _ms_degrade_ready_q_len_threshold = -1;
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -213,6 +218,7 @@ static ms_reaction_policy_t* _ms_get_policy(int env_id, uint64_t reaction_index,
   pol->env_id = env_id;
   pol->reaction_index = reaction_index;
   pol->criticality = MS_CRIT_HIGH;
+  pol->degradable = false;
   pol->budget = _ms_policy.default_budget;
   pol->window_start_mono_ns = 0;
   pol->used_in_window = 0;
@@ -264,6 +270,29 @@ static ms_criticality_t _ms_parse_criticality(const char* s, int* ok) {
   return MS_CRIT_HIGH;
 }
 
+static int _ms_parse_bool(const char* s, int* ok) {
+  if (s == NULL) {
+    if (ok) *ok = 0;
+    return 0;
+  }
+  if (strcmp(s, "1") == 0 ||
+      strcasecmp(s, "true") == 0 ||
+      strcasecmp(s, "yes") == 0 ||
+      strcasecmp(s, "on") == 0) {
+    if (ok) *ok = 1;
+    return 1;
+  }
+  if (strcmp(s, "0") == 0 ||
+      strcasecmp(s, "false") == 0 ||
+      strcasecmp(s, "no") == 0 ||
+      strcasecmp(s, "off") == 0) {
+    if (ok) *ok = 1;
+    return 0;
+  }
+  if (ok) *ok = 0;
+  return 0;
+}
+
 static void _ms_set_policy_kv(const char* key, const char* val) {
   if (key == NULL || val == NULL) return;
 
@@ -295,7 +324,8 @@ static void _ms_set_policy_kv(const char* key, const char* val) {
 }
 
 static void _ms_parse_reaction_line(char* line) {
-  // Expected format: reaction,env_id,reaction_index,criticality,budget
+  // Expected format:
+  // reaction,env_id,reaction_index,criticality,budget[,degradable]
   char* rest = line + strlen("reaction");
   while (*rest && (isspace((unsigned char)*rest) || *rest == ',')) rest++;
   if (*rest == '\0') {
@@ -303,10 +333,10 @@ static void _ms_parse_reaction_line(char* line) {
     return;
   }
 
-  char* tokens[4] = {0};
+  char* tokens[5] = {0};
   int count = 0;
   char* tok = strtok(rest, ", \t");
-  while (tok != NULL && count < 4) {
+  while (tok != NULL && count < 5) {
     tokens[count++] = tok;
     tok = strtok(NULL, ", \t");
   }
@@ -321,9 +351,18 @@ static void _ms_parse_reaction_line(char* line) {
   int crit_ok = 0;
   ms_criticality_t crit = _ms_parse_criticality(tokens[2], &crit_ok);
   int64_t budget = (int64_t)strtoll(tokens[3], NULL, 10);
+  int degradable_ok = 1;
+  int degradable = 0;
+  if (count >= 5) {
+    degradable = _ms_parse_bool(tokens[4], &degradable_ok);
+  }
 
   if (!crit_ok) {
     _ms_logf(MS_LEVEL_WARN, "event=config_reaction_bad_crit value=%s", tokens[2]);
+    return;
+  }
+  if (!degradable_ok) {
+    _ms_logf(MS_LEVEL_WARN, "event=config_reaction_bad_degradable value=%s", tokens[4]);
     return;
   }
 
@@ -334,11 +373,13 @@ static void _ms_parse_reaction_line(char* line) {
     return;
   }
   pol->criticality = crit;
+  pol->degradable = (degradable != 0);
   pol->budget = budget;
 
   _ms_logf(MS_LEVEL_INFO,
-           "event=config_reaction env=%d reaction_index=%llu criticality=%s budget=%lld",
-           env_id, (unsigned long long)reaction_index, _ms_criticality_str(crit), (long long)budget);
+           "event=config_reaction env=%d reaction_index=%llu criticality=%s degradable=%d budget=%lld",
+           env_id, (unsigned long long)reaction_index, _ms_criticality_str(crit), pol->degradable ? 1 : 0,
+           (long long)budget);
 }
 
 static void _ms_load_config(const char* path) {
@@ -496,6 +537,15 @@ static void _ms_os_load_env(void) {
 
   _ms_partition_enabled = _ms_is_true(getenv("LF_MS_WORKER_PARTITION_ENABLE"));
   _ms_minimal_log = _ms_is_true(getenv("LF_MS_MINIMAL_LOG"));
+  _ms_degrade_enabled = _ms_is_true(getenv("LF_MS_DEGRADE_ENABLE"));
+  const char* dlag = getenv("LF_MS_DEGRADE_LAG_NS");
+  if (dlag != NULL && dlag[0] != '\0') {
+    _ms_degrade_lag_threshold_ns = (int64_t)strtoll(dlag, NULL, 10);
+  }
+  const char* drq = getenv("LF_MS_DEGRADE_READY_Q_LEN");
+  if (drq != NULL && drq[0] != '\0') {
+    _ms_degrade_ready_q_len_threshold = atoi(drq);
+  }
   _ms_partition_hc_workers = 0;
   const char* phc = getenv("LF_MS_HC_WORKERS");
   if (phc != NULL && phc[0] != '\0') {
@@ -525,6 +575,14 @@ static void _ms_os_load_env(void) {
       _ms_os_config.hc_guard_enabled ? 1 : 0,
       (long long)_ms_os_config.hc_guard_lag_ns,
       _ms_os_config.hc_guard_ready_q_len
+  );
+  _ms_logf(
+      MS_LEVEL_INFO,
+      "event=degrade_config enabled=%d lag_ns=%lld ready_q_len=%d action=%s",
+      _ms_degrade_enabled ? 1 : 0,
+      (long long)_ms_degrade_lag_threshold_ns,
+      _ms_degrade_ready_q_len_threshold,
+      _ms_degrade_str(_ms_policy.degrade_action)
   );
 }
 
@@ -727,11 +785,6 @@ void ms_on_reaction_ready(
 
     int updated = 0;
     int dropped = 0;
-    int degraded = 0;
-    ms_degrade_action_t degraded_action = MS_DEGRADE_DEFER;
-    ms_criticality_t degraded_crit = MS_CRIT_HIGH;
-    int64_t degraded_budget = 0;
-    int64_t degraded_used = 0;
     int64_t ready_time = _ms_now_mono_ns();
 
     pthread_mutex_lock(&_ms_lock);
@@ -762,29 +815,6 @@ void ms_on_reaction_ready(
           dropped = 1;
         }
 
-        if (!dropped && entry_index >= 0) {
-          ms_ready_entry_t* entry = &set->entries[entry_index];
-          ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
-          if (pol == NULL && _ms_policy.default_budget >= 0) {
-            pol = _ms_get_policy(env_id, reaction_index, true);
-          }
-          if (pol != NULL &&
-              pol->criticality == MS_CRIT_LOW &&
-              _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT &&
-              pol->budget >= 0 &&
-              !_ms_budget_allows(pol, ready_time)) {
-            degraded = 1;
-            degraded_action = _ms_policy.degrade_action;
-            degraded_crit = pol->criticality;
-            degraded_budget = pol->budget;
-            degraded_used = pol->used_in_window;
-            if (_ms_policy.degrade_action == MS_DEGRADE_SKIP) {
-              _ms_ready_remove_at(set, entry_index);
-            } else {
-              entry->state = MS_DEFERRED;
-            }
-          }
-        }
       }
     }
     pthread_mutex_unlock(&_ms_lock);
@@ -806,15 +836,6 @@ void ms_on_reaction_ready(
       );
     }
 
-    if (degraded) {
-      _ms_logf(
-          MS_LEVEL_WARN,
-          "event=degrade action=%s env=%d reaction_index=%llu criticality=%s budget=%lld used=%lld",
-          _ms_degrade_str(degraded_action), env_id,
-          (unsigned long long)reaction_index, _ms_criticality_str(degraded_crit),
-          (long long)degraded_budget, (long long)degraded_used
-      );
-    }
 }
 
 long long ms_pick_next(
@@ -846,7 +867,10 @@ long long ms_pick_next(
     int64_t hc_deadline = 0;
     int64_t hc_ready = 0;
     int force_hc_guard = 0;
-    const int64_t now_mono_ns = _ms_now_mono_ns();
+    int degrade_pressure = 0;
+    int ready_count = 0;
+    char ready_buf[1024];
+    ready_buf[0] = '\0';
     const ms_criticality_t target_crit = _ms_worker_target_crit(worker_id);
     const int partition_enabled = _ms_partition_enabled;
 
@@ -858,6 +882,11 @@ long long ms_pick_next(
           _ms_env_pressure[env_id]) {
         force_hc_guard = 1;
       }
+      if (_ms_degrade_enabled &&
+          env_id >= 0 && env_id < MS_MAX_ENVS &&
+          _ms_env_degrade_pressure[env_id]) {
+        degrade_pressure = 1;
+      }
       if (set != NULL) {
         int i = 0;
         while (i < set->count) {
@@ -866,54 +895,15 @@ long long ms_pick_next(
             i++;
             continue;
           }
+          ready_count++;
+          size_t used = strlen(ready_buf);
+          if (used < sizeof(ready_buf) - 32) {
+            snprintf(ready_buf + used, sizeof(ready_buf) - used, "%s%llu",
+                     used == 0 ? "" : "|",
+                     (unsigned long long)entry->reaction_index);
+          }
 
           ms_reaction_policy_t* pol = _ms_find_policy(env_id, entry->reaction_index);
-          if (pol == NULL && _ms_policy.default_budget >= 0) {
-            pol = _ms_get_policy(env_id, entry->reaction_index, true);
-          }
-          int budget_allows = _ms_budget_allows(pol, now_mono_ns);
-          if (entry->state == MS_DEFERRED) {
-            if (!budget_allows) {
-              i++;
-              continue;
-            }
-            entry->state = MS_READY;
-          }
-
-          if (entry->state == MS_READY &&
-              pol != NULL &&
-              pol->criticality == MS_CRIT_LOW &&
-              _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT &&
-              pol->budget >= 0 &&
-              !budget_allows) {
-            if (_ms_policy.degrade_action == MS_DEGRADE_SKIP) {
-              _ms_logf(
-                  MS_LEVEL_WARN,
-                  "event=degrade action=skip env=%d reaction_index=%llu criticality=%s budget=%lld used=%lld",
-                  env_id, (unsigned long long)entry->reaction_index,
-                  _ms_criticality_str(pol->criticality),
-                  (long long)pol->budget, (long long)pol->used_in_window
-              );
-              _ms_ready_remove_at(set, i);
-              continue;
-            } else {
-              entry->state = MS_DEFERRED;
-              _ms_logf(
-                  MS_LEVEL_WARN,
-                  "event=degrade action=defer env=%d reaction_index=%llu criticality=%s budget=%lld used=%lld",
-                  env_id, (unsigned long long)entry->reaction_index,
-                  _ms_criticality_str(pol->criticality),
-                  (long long)pol->budget, (long long)pol->used_in_window
-              );
-              i++;
-              continue;
-            }
-          }
-
-          if (entry->state != MS_READY) {
-            i++;
-            continue;
-          }
 
           ms_criticality_t entry_crit = MS_CRIT_HIGH;
           if (pol != NULL) {
@@ -955,7 +945,7 @@ long long ms_pick_next(
           }
           i++;
         }
-        if (force_hc_guard && has_hc_candidate) {
+        if ((force_hc_guard || degrade_pressure) && has_hc_candidate) {
           candidate = hc_candidate;
           candidate_deadline = hc_deadline;
           candidate_ready = hc_ready;
@@ -976,15 +966,18 @@ long long ms_pick_next(
       if (has_candidate) {
         _ms_logf(
             MS_LEVEL_DEBUG,
-            "event=pick_next env=%d candidate=%llu reason=earliest_deadline deadline=%lld ready_time=%lld logical=%lld",
+            "event=pick_next env=%d candidate=%llu reason=%s deadline=%lld ready_time=%lld logical=%lld ready_count=%d ready_set=%s",
             env_id, (unsigned long long)candidate, (long long)candidate_deadline,
-            (long long)candidate_ready, logical_time_ns
+            (force_hc_guard || degrade_pressure) ? "hc_first" : "earliest_deadline",
+            (long long)candidate_ready, logical_time_ns, ready_count,
+            ready_buf[0] != '\0' ? ready_buf : "-"
         );
       } else {
         _ms_logf(
-            MS_LEVEL_DEBUG,
-            "event=pick_next env=%d candidate=-1 reason=empty logical=%lld",
-            env_id, logical_time_ns
+            MS_LEVEL_INFO,
+            "event=fallback env=%d reason=no_candidate logical=%lld ready_count=%d ready_set=%s",
+            env_id, logical_time_ns, ready_count,
+            ready_buf[0] != '\0' ? ready_buf : "-"
         );
       }
     }
@@ -1006,12 +999,6 @@ void ms_on_reaction_start(
 
     int found = 0;
     long long last_pick = -1;
-    int budget_exceeded = 0;
-    long long budget_used = 0;
-    long long budget_limit = 0;
-    int skip_expected = 0;
-    ms_criticality_t crit = MS_CRIT_HIGH;
-    const int64_t now_mono_ns = _ms_now_mono_ns();
     pthread_mutex_lock(&_ms_lock);
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
@@ -1037,17 +1024,6 @@ void ms_on_reaction_start(
           _ms_worker_crit_mask[worker_id] |= 0x2;
         }
       }
-      if (pol != NULL && _ms_policy.budget_type == MS_BUDGET_REACTION_COUNT && pol->budget >= 0) {
-        skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
-        _ms_refresh_budget_window(pol, now_mono_ns);
-        pol->used_in_window++;
-        if (pol->used_in_window > pol->budget) {
-          budget_exceeded = 1;
-          budget_used = pol->used_in_window;
-          budget_limit = pol->budget;
-          crit = pol->criticality;
-        }
-      }
     }
     pthread_mutex_unlock(&_ms_lock);
 
@@ -1060,10 +1036,9 @@ void ms_on_reaction_start(
 
       if (!found) {
         _ms_logf(
-            skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-            "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld skip_expected=%d",
+            MS_LEVEL_WARN,
+            "event=runtime_selected_missing env=%d reaction_index=%llu physical=%lld",
             env_id, (unsigned long long)reaction_index, physical_time_ns
-            , skip_expected
         );
       }
     }
@@ -1076,14 +1051,6 @@ void ms_on_reaction_start(
       );
     }
 
-    if (budget_exceeded) {
-      _ms_logf(
-          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=budget_exceeded env=%d reaction_index=%llu criticality=%s used=%lld budget=%lld skip_expected=%d",
-          env_id, (unsigned long long)reaction_index, _ms_criticality_str(crit),
-          budget_used, budget_limit, skip_expected
-      );
-    }
 }
 
 void ms_on_reaction_end(
@@ -1100,8 +1067,6 @@ void ms_on_reaction_end(
     if (!_ms_enabled) return;
 
     int removed = 0;
-    int skip_expected = 0;
-    const int64_t now_mono_ns = _ms_now_mono_ns();
     pthread_mutex_lock(&_ms_lock);
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
@@ -1113,21 +1078,100 @@ void ms_on_reaction_end(
         }
       }
 
-      ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
-      if (pol == NULL && _ms_policy.default_budget >= 0) {
-        pol = _ms_get_policy(env_id, reaction_index, true);
-      }
-      skip_expected = _ms_is_skip_expected(pol, now_mono_ns);
     }
     pthread_mutex_unlock(&_ms_lock);
 
     if (!removed && !_ms_minimal_log) {
       _ms_logf(
-          skip_expected ? MS_LEVEL_INFO : MS_LEVEL_WARN,
-          "event=ready_missing_on_end env=%d reaction_index=%llu skip_expected=%d",
-          env_id, (unsigned long long)reaction_index, skip_expected
+          MS_LEVEL_WARN,
+          "event=ready_missing_on_end env=%d reaction_index=%llu",
+          env_id, (unsigned long long)reaction_index
       );
     }
+}
+
+bool ms_should_skip_reaction(
+    int env_id,
+    int worker_id,
+    uint64_t reaction_index,
+    long long logical_time_ns
+) {
+  (void)worker_id;
+  if (!_ms_enabled || !_ms_degrade_enabled) return false;
+  if (_ms_policy.degrade_action != MS_DEGRADE_SKIP) return false;
+
+  int should_skip = 0;
+  int ready_count = 0;
+  int has_hc_ready = 0;
+  int missing_metadata = 0;
+  char ready_buf[1024];
+  ready_buf[0] = '\0';
+
+  pthread_mutex_lock(&_ms_lock);
+  ms_ready_set_t* set = _ms_get_ready_set(env_id);
+  if (set == NULL ||
+      env_id < 0 || env_id >= MS_MAX_ENVS ||
+      !_ms_env_degrade_pressure[env_id]) {
+    pthread_mutex_unlock(&_ms_lock);
+    return false;
+  }
+
+  ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
+  if (pol == NULL) {
+    missing_metadata = 1;
+  }
+
+  for (int i = 0; i < set->count; i++) {
+    ms_ready_entry_t* entry = &set->entries[i];
+    if (entry->state == MS_RUNNING) continue;
+    ready_count++;
+    size_t used = strlen(ready_buf);
+    if (used < sizeof(ready_buf) - 32) {
+      snprintf(ready_buf + used, sizeof(ready_buf) - used, "%s%llu",
+               used == 0 ? "" : "|",
+               (unsigned long long)entry->reaction_index);
+    }
+    ms_reaction_policy_t* entry_pol = _ms_find_policy(env_id, entry->reaction_index);
+    if (entry_pol == NULL) continue;
+    if (entry_pol->criticality == MS_CRIT_HIGH) {
+      has_hc_ready = 1;
+    }
+  }
+
+  if (!missing_metadata &&
+      pol != NULL &&
+      pol->criticality == MS_CRIT_LOW &&
+      pol->degradable &&
+      has_hc_ready) {
+    int idx = _ms_ready_find(set, reaction_index);
+    if (idx >= 0) {
+      _ms_ready_remove_at(set, idx);
+    }
+    should_skip = 1;
+  }
+  pthread_mutex_unlock(&_ms_lock);
+
+  if (missing_metadata) {
+    _ms_logf(
+        MS_LEVEL_WARN,
+        "event=fallback env=%d reason=missing_metadata logical=%lld reaction_index=%llu ready_count=%d ready_set=%s",
+        env_id, logical_time_ns, (unsigned long long)reaction_index, ready_count,
+        ready_buf[0] != '\0' ? ready_buf : "-"
+    );
+    return false;
+  }
+
+  if (should_skip) {
+    _ms_logf(
+        MS_LEVEL_WARN,
+        "event=degrade action=skip reason=pressure env=%d logical=%lld reaction_index=%llu ready_count=%d ready_set=%s",
+        env_id, logical_time_ns, (unsigned long long)reaction_index, ready_count,
+        ready_buf[0] != '\0' ? ready_buf : "-"
+    );
+    return true;
+  }
+
+  return false;
 }
 
 void ms_on_metrics(
@@ -1184,6 +1228,16 @@ void ms_on_metrics(
 
   if (env_id >= 0 && env_id < MS_MAX_ENVS) {
     _ms_env_pressure[env_id] = hc_guard_pressure;
+    _ms_env_degrade_pressure[env_id] = 0;
+    if (_ms_degrade_enabled) {
+      if (_ms_degrade_lag_threshold_ns >= 0 && lag_ns >= _ms_degrade_lag_threshold_ns) {
+        _ms_env_degrade_pressure[env_id] = 1;
+      }
+      if (_ms_degrade_ready_q_len_threshold >= 0 && ready_len >= 0 &&
+          ready_len >= _ms_degrade_ready_q_len_threshold) {
+        _ms_env_degrade_pressure[env_id] = 1;
+      }
+    }
   }
   const int mixed_criticality_worker =
       !_ms_partition_enabled && ((_ms_worker_crit_mask[worker_id] & 0x3) == 0x3);

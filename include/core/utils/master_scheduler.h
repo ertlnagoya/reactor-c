@@ -19,8 +19,8 @@
  *  - LF_MS_OS_NICE_DELTA=... : nice delta to apply for low-criticality workers
  */
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -113,6 +113,16 @@ void ms_on_reaction_end(
     uint64_t reaction_index,
     long long physical_time_ns,
     int status
+);
+
+// Phase 3: explicit degradation guard for optional LC reactions.
+// Returns true only when it is safe to skip the specified reaction in the
+// current ready set under overload pressure.
+bool ms_should_skip_reaction(
+    int env_id,
+    int worker_id,
+    uint64_t reaction_index,
+    long long logical_time_ns
 );
 
 // Phase 4: Report metrics for OS-level policy decisions.
