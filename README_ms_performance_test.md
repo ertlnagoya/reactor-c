@@ -4,6 +4,7 @@ This document describes reproducible steps for the current MS performance evalua
 
 - E1: runtime overhead of MS intervention
 - E2: HC miss-rate comparison across LF baseline and two MS+RT configurations
+- E3: controlled degradation under overload
 
 ## 0. Reproducing tagged artifacts
 
@@ -255,7 +256,133 @@ Sample size note:
 - baseline in the plot is pooled from both long CSVs (`n=60`)
 - each RT condition uses one long CSV (`n=30`)
 
-## 4. Practical notes for reproducibility
+### 3.4 E2 thread-analysis extension
+
+To collect per-thread CPU utilization, context-switch activity, and reaction-latency distributions for the E2 workload:
+
+```bash
+python3 ms-eval/scripts/run_e2_thread_analysis.py \
+  --repeats 30 \
+  --load 1.15 \
+  --steps 1600 \
+  --workers 2 \
+  --hc-workers 1 \
+  --hc 1 \
+  --lc 5 \
+  --hc-work-us 90 \
+  --lc-work-us 230 \
+  --deadline-us 1800 \
+  --stress-cpu 1 \
+  --stress-load 80 \
+  --stress-timeout-s 360 \
+  --stress-warmup-s 3 \
+  --container-cpuset 0-3 \
+  --lf-cpu-set 0-1 \
+  --stress-cpu-set 2 \
+  --drop-initial-tags 20 \
+  --inter-arm-sleep-ms 200 \
+  --os-lag-ns 300000 \
+  --os-ready-q-len 4 \
+  --os-lc-base-nice-delta 0 \
+  --os-nice-delta 2 \
+  --os-hc-nice-delta 0 \
+  --os-rt-enable 1 \
+  --os-rt-prio-hc 10 \
+  --os-rt-prio-lc 2 \
+  --hc-guard-enable 1 \
+  --hc-guard-lag-ns 300000 \
+  --hc-guard-ready-q-len 4 \
+  --docker-cap-sys-nice 1 \
+  --out-prefix e2_thread_analysis_r30
+
+python3 ms-eval/scripts/parse_e2_thread_analysis.py \
+  --manifest ms-eval/results/e2_thread_analysis_r30_manifest.csv \
+  --out-thread ms-eval/results/e2_thread_utilization.csv \
+  --out-latency ms-eval/results/e2_reaction_latency_distribution.csv \
+  --out-single ms-eval/results/e2_single_worker_thread_comparison.csv
+
+python3 ms-eval/scripts/summarize_e2_thread_analysis.py \
+  --out ms-eval/results/e2_thread_analysis_summary.csv
+```
+
+Artifacts:
+
+- `ms-eval/results/e2_thread_analysis_r30_manifest.csv`
+- `ms-eval/results/e2_thread_utilization.csv`
+- `ms-eval/results/e2_reaction_latency_distribution.csv`
+- `ms-eval/results/e2_single_worker_thread_comparison.csv`
+- `ms-eval/results/e2_thread_analysis_summary.csv`
+
+## 4. E3: controlled degradation under overload
+
+### 4.1 E3 strong-overload run
+
+```bash
+./run_e3.sh
+```
+
+This emits logs under:
+
+- `ms-eval/logs/e3/<timestamp>`
+
+### 4.2 E3 follow-up load sweep (`n=30`)
+
+```bash
+python3 ms-eval/scripts/run_e3_degradation_compare.py \
+  --loads 0.4,0.6,0.8,1.0,1.2,1.6,2.0 \
+  --repeats 30 \
+  --steps 120 \
+  --workers 2 \
+  --hc 1 \
+  --lc 4 \
+  --hc-work-us 150 \
+  --lc-work-us 260 \
+  --deadline-us 1000 \
+  --period-us 1000 \
+  --degrade-lag-ns 120000 \
+  --degrade-ready-q-len 10 \
+  --drop-initial-tags 10 \
+  --out-prefix e3_followup_n30
+
+python3 ms-eval/scripts/postprocess_e3_followup_n30.py \
+  --in-long ms-eval/results/e3_followup_n30_long.csv \
+  --out-raw ms-eval/results/e3_followup_raw_n30.csv \
+  --out-summary ms-eval/results/e3_followup_summary_n30.csv \
+  --out-tests ms-eval/results/e3_followup_statistical_tests.csv
+```
+
+Artifacts:
+
+- `ms-eval/results/e3_followup_n30_long.csv`
+- `ms-eval/results/e3_followup_n30_summary.csv`
+- `ms-eval/results/e3_followup_raw_n30.csv`
+- `ms-eval/results/e3_followup_summary_n30.csv`
+- `ms-eval/results/e3_followup_statistical_tests.csv`
+
+### 4.3 Paper figure regeneration
+
+```bash
+python3 ms-eval/scripts/summarize_e1_three_conditions.py \
+  --in-raw ms-eval/results/e1_overhead_n30.csv \
+  --out-summary ms-eval/results/e1_three_conditions_summary.csv \
+  --out-diff ms-eval/results/e1_observe_vs_intervene.csv
+
+python3 ms-eval/scripts/plot_paper_figures.py \
+  --e1-summary ms-eval/results/e1_three_conditions_summary.csv \
+  --e2-plotdata ms-eval/results/e2_rt_comparison_plotdata_v2.csv \
+  --e3-summary ms-eval/results/e3_followup_summary_n30.csv
+```
+
+Paper-ready outputs:
+
+- `ms-eval/figures/fig4_e1_overhead.png`
+- `ms-eval/figures/fig4_e1_overhead.pdf`
+- `ms-eval/figures/fig5_e2_missrate.png`
+- `ms-eval/figures/fig5_e2_missrate.pdf`
+- `ms-eval/figures/fig_e3_loadsweep.png`
+- `ms-eval/figures/fig_e3_loadsweep.pdf`
+
+## 5. Practical notes for reproducibility
 
 - Keep Docker image and host load conditions fixed while collecting data.
 - `ms-eval/logs` can become very large; keep only required timestamps for archival.
