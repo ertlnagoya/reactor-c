@@ -225,34 +225,6 @@ static ms_reaction_policy_t* _ms_get_policy(int env_id, uint64_t reaction_index,
   return pol;
 }
 
-static void _ms_refresh_budget_window(ms_reaction_policy_t* pol, int64_t now_mono_ns) {
-  if (pol == NULL) return;
-  if (_ms_policy.budget_window_ns <= 0) return;
-  if (pol->window_start_mono_ns == 0 ||
-      (now_mono_ns - pol->window_start_mono_ns) >= _ms_policy.budget_window_ns) {
-    pol->window_start_mono_ns = now_mono_ns;
-    pol->used_in_window = 0;
-  }
-}
-
-static int _ms_is_skip_expected(ms_reaction_policy_t* pol, int64_t now_mono_ns) {
-  if (pol == NULL) return 0;
-  if (pol->criticality != MS_CRIT_LOW) return 0;
-  if (_ms_policy.degrade_action != MS_DEGRADE_SKIP) return 0;
-  if (_ms_policy.budget_type != MS_BUDGET_REACTION_COUNT) return 0;
-  if (pol->budget < 0) return 0;
-  _ms_refresh_budget_window(pol, now_mono_ns);
-  return (pol->used_in_window >= pol->budget);
-}
-
-static int _ms_budget_allows(ms_reaction_policy_t* pol, int64_t now_mono_ns) {
-  if (pol == NULL) return 1;
-  if (_ms_policy.budget_type != MS_BUDGET_REACTION_COUNT) return 1;
-  if (pol->budget < 0) return 1;
-  _ms_refresh_budget_window(pol, now_mono_ns);
-  return (pol->used_in_window < pol->budget);
-}
-
 static ms_criticality_t _ms_parse_criticality(const char* s, int* ok) {
   if (s == NULL) {
     if (ok) *ok = 0;
@@ -650,6 +622,13 @@ bool ms_init(const char* config_path) {
     _ms_observe_only = true;
     pthread_mutex_unlock(&_ms_lock);
   }
+  const char* report_iv = getenv("LF_MS_REPORT_MIN_INTERVAL_NS");
+  if (report_iv != NULL && report_iv[0] != '\0') {
+    long long v = atoll(report_iv);
+    if (v >= 0) {
+      _ms_report_min_interval_ns = v;
+    }
+  }
 
   const char* path = getenv("LF_MS_LOG");
   if (path == NULL || path[0] == '\0') {
@@ -793,7 +772,6 @@ void ms_on_reaction_ready(
       if (set == NULL) {
         dropped = 1;
       } else {
-        int entry_index = -1;
         int idx = _ms_ready_find(set, reaction_index);
         if (idx >= 0) {
           ms_ready_entry_t* entry = &set->entries[idx];
@@ -802,7 +780,6 @@ void ms_on_reaction_ready(
           entry->is_input = is_input;
           entry->state = MS_READY;
           updated = 1;
-          entry_index = idx;
         } else if (set->count < MS_MAX_READY_PER_ENV) {
           ms_ready_entry_t* entry = &set->entries[set->count++];
           entry->reaction_index = reaction_index;
@@ -810,7 +787,6 @@ void ms_on_reaction_ready(
           entry->ready_time_ns = ready_time;
           entry->is_input = is_input;
           entry->state = MS_READY;
-          entry_index = set->count - 1;
         } else {
           dropped = 1;
         }
