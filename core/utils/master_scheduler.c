@@ -156,6 +156,14 @@ static int _ms_env_degrade_pressure[MS_MAX_ENVS] = {0};
 static bool _ms_degrade_enabled = false;
 static int64_t _ms_degrade_lag_threshold_ns = -1;
 static int _ms_degrade_ready_q_len_threshold = -1;
+// When set, HC reactions are always picked before LC (criticality-monotonic),
+// not only during transient overload pressure. Opt-in via LF_MS_HC_STRICT_PRIORITY.
+static bool _ms_hc_strict_priority = false;
+// Env-level LC budget accounting for graceful (partial) shedding. Active when
+// _ms_policy.default_budget >= 0: at most default_budget LC reactions are kept
+// per budget_window_ns while degrade pressure is active; the rest are shed.
+static int64_t _ms_env_lc_window_start_ns[MS_MAX_ENVS] = {0};
+static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -518,6 +526,7 @@ static void _ms_os_load_env(void) {
   if (drq != NULL && drq[0] != '\0') {
     _ms_degrade_ready_q_len_threshold = atoi(drq);
   }
+  _ms_hc_strict_priority = _ms_is_true(getenv("LF_MS_HC_STRICT_PRIORITY"));
   _ms_partition_hc_workers = 0;
   const char* phc = getenv("LF_MS_HC_WORKERS");
   if (phc != NULL && phc[0] != '\0') {
@@ -921,7 +930,7 @@ long long ms_pick_next(
           }
           i++;
         }
-        if ((force_hc_guard || degrade_pressure) && has_hc_candidate) {
+        if ((force_hc_guard || degrade_pressure || _ms_hc_strict_priority) && has_hc_candidate) {
           candidate = hc_candidate;
           candidate_deadline = hc_deadline;
           candidate_ready = hc_ready;
@@ -944,7 +953,7 @@ long long ms_pick_next(
             MS_LEVEL_DEBUG,
             "event=pick_next env=%d candidate=%llu reason=%s deadline=%lld ready_time=%lld logical=%lld ready_count=%d ready_set=%s",
             env_id, (unsigned long long)candidate, (long long)candidate_deadline,
-            (force_hc_guard || degrade_pressure) ? "hc_first" : "earliest_deadline",
+            (force_hc_guard || degrade_pressure || _ms_hc_strict_priority) ? "hc_first" : "earliest_deadline",
             (long long)candidate_ready, logical_time_ns, ready_count,
             ready_buf[0] != '\0' ? ready_buf : "-"
         );
@@ -1119,11 +1128,30 @@ bool ms_should_skip_reaction(
       pol->criticality == MS_CRIT_LOW &&
       pol->degradable &&
       has_hc_ready) {
-    int idx = _ms_ready_find(set, reaction_index);
-    if (idx >= 0) {
-      _ms_ready_remove_at(set, idx);
+    // Graceful budget: when default_budget >= 0, keep up to that many LC
+    // reactions per budget window and shed only the surplus. When < 0, fall
+    // back to all-or-nothing shedding under pressure (legacy behaviour).
+    int allow_within_budget = 0;
+    if (_ms_policy.default_budget >= 0 && env_id >= 0 && env_id < MS_MAX_ENVS) {
+      int64_t now = _ms_now_mono_ns();
+      int64_t window = _ms_policy.budget_window_ns > 0 ? _ms_policy.budget_window_ns : 1;
+      if (_ms_env_lc_window_start_ns[env_id] == 0 ||
+          now - _ms_env_lc_window_start_ns[env_id] >= window) {
+        _ms_env_lc_window_start_ns[env_id] = now;
+        _ms_env_lc_used_in_window[env_id] = 0;
+      }
+      if (_ms_env_lc_used_in_window[env_id] < _ms_policy.default_budget) {
+        _ms_env_lc_used_in_window[env_id]++;
+        allow_within_budget = 1;
+      }
     }
-    should_skip = 1;
+    if (!allow_within_budget) {
+      int idx = _ms_ready_find(set, reaction_index);
+      if (idx >= 0) {
+        _ms_ready_remove_at(set, idx);
+      }
+      should_skip = 1;
+    }
   }
   pthread_mutex_unlock(&_ms_lock);
 

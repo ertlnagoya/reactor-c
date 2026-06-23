@@ -23,7 +23,11 @@ def main() -> None:
     lines.append(f"degrade_action={args.degrade_action}")
     lines.append(f"budget_type={args.budget_type}")
     lines.append(f"budget_window_ns={args.window_ns}")
-    lines.append("default_budget=-1")
+    # default_budget is the env-level LC allowance per budget window during
+    # degrade pressure. Previously hard-coded to -1, which disabled budgeting
+    # entirely and made --lc-budget a no-op; now plumbed through so degradation
+    # sheds gracefully (keep up to lc_budget LC per window) instead of all LC.
+    lines.append(f"default_budget={args.lc_budget}")
 
     if args.reaction_indices.strip():
         parsed = [x.strip() for x in args.reaction_indices.split(",") if x.strip()]
