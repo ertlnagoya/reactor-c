@@ -312,6 +312,36 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>ms_os_policy_t</Name>
+      <APILanguage>c</APILanguage>
+      <Type>cl</Type>
+      <Scope>ms_os_policy_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__os__policy__t.html</Path>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_report_t</Name>
+      <APILanguage>c</APILanguage>
+      <Type>cl</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_worker_info_t</Name>
+      <APILanguage>c</APILanguage>
+      <Type>cl</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>object_description_t</Name>
       <APILanguage>c</APILanguage>
       <Type>cl</Type>
@@ -703,6 +733,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>affinity_mask</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_os_policy_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__os__policy__t.html</Path>
+    <Anchor>af872e752b475c67b0cc84b7b6b69db0f</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>all_federates_exited</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -1063,6 +1103,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>deadline_misses</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>a30db003eace6e18a76c2f33211e2f073</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>deadline_violation_handler</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -1390,6 +1440,16 @@
     </TokenIdentifier>
     <Path>structreactor__mode__t.html</Path>
     <Anchor>a1cfbbf04e57197d289000420ab3742a4</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>flags</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <Anchor>a7c73c6b9f3f9697551a9ffe6d27a954e</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -1883,6 +1943,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>lag_ns</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>a39c2d868f45f4eb05f89a7691623d4a4</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>last_DNET</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -2060,6 +2130,16 @@
     </TokenIdentifier>
     <Path>structtrace__record__nodeps__t.html</Path>
     <Anchor>abda0a12d07332a37b3249ebec1127077</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>logical_time_ns</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>ae91ae700aca941dd13c8f0f45dd90770</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -2343,6 +2423,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>name</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <Anchor>a7f5693f274d2d3ab4423da62c093893f</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>nbits</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -2460,6 +2550,16 @@
     </TokenIdentifier>
     <Path>structreactor__mode__state__t.html</Path>
     <Anchor>ac8365c61460d0e4bd957499755765a3a</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>nice_delta</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_os_policy_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__os__policy__t.html</Path>
+    <Anchor>aa2f07f90d6f6e5723676e7c6b38fe679</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -2703,6 +2803,26 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>os_pid</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <Anchor>af8f95dbe2b44543d0933facdf0ab6513</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>os_tid</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <Anchor>aad4c032fb35dd69d3d4b9268c20279b4</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>output_produced</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -2780,6 +2900,16 @@
     </TokenIdentifier>
     <Path>structtrace__record__nodeps__t.html</Path>
     <Anchor>a14a0682d99d9f5e00f6ae90a1cd80417</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>physical_time_ns</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>a3c211ac8342f08781a8fe8274b96501c</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -2963,6 +3093,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>reaction_id</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>ad5d3f2a045d1a4fcb3bbb29e69a152f1</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>reactions</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -2973,6 +3113,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>reactor_id</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>a41eba117cda858691cb349fd9c865651</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>reactor_mutex</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -2980,6 +3130,16 @@
     </TokenIdentifier>
     <Path>structself__base__t.html</Path>
     <Anchor>ad19c2e3ac3920c1244d81076ecbad2c9</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ready_q_len</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>aa64f7cccc333765ec3d216efe13618f1</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -3083,6 +3243,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>rt_priority</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_os_policy_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__os__policy__t.html</Path>
+    <Anchor>a6f4a37b995bea075c5231db1eaa21517</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>rti_host</Name>
       <APILanguage>cpp</APILanguage>
       <Type>data</Type>
@@ -3150,6 +3320,16 @@
     </TokenIdentifier>
     <Path>structrti__addr__info__t.html</Path>
     <Anchor>a3604fd6c5f95ce9afa7afcb188093ac8</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>sched_policy</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_os_policy_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__os__policy__t.html</Path>
+    <Anchor>a74929110ae11303240f322819537d92c</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -4130,6 +4310,26 @@
     </TokenIdentifier>
     <Path>structreaction__t.html</Path>
     <Anchor>a861cbf9521eb367cedf9e2d0ecee0fca</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>worker_id</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_worker_info_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__worker__info__t.html</Path>
+    <Anchor>ac79ca88b6ca1824c1ba81ecb33878c1f</Anchor>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>worker_id</Name>
+      <APILanguage>cpp</APILanguage>
+      <Type>data</Type>
+      <Scope>ms_report_t</Scope>
+    </TokenIdentifier>
+    <Path>structms__report__t.html</Path>
+    <Anchor>a8584ed4b72c068f6011a68520bd1f553</Anchor>
   </Token>
   <Token>
     <TokenIdentifier>
@@ -9420,6 +9620,356 @@
     <Path>modes_8h.html</Path>
     <Anchor>aa0d16fb5be46a95c06fe8b41ba0163f1</Anchor>
     <DeclaredIn>modes.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_gettid</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a482606b79cedb0203d1574ac91ffae06</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_init</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a7404d6b7c139c5fbab94aa5197add2f6</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_DEBUG</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3acb497ed3dbc3460d4d04b380bd42827f</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_ERROR</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a8f0050894619b9d02dde95c824fd17d1</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_INFO</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a3a97f724239244273893c1ed1d459a8a</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_WARN</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a3ad8127598869b363d3f3729101c7af9</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_log_level_t</Name>
+      <APILanguage>c</APILanguage>
+      <Type>enum</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_ERROR</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a8f0050894619b9d02dde95c824fd17d1</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_WARN</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a3ad8127598869b363d3f3729101c7af9</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_INFO</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3a3a97f724239244273893c1ed1d459a8a</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_LEVEL_DEBUG</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a11d02f1c94f3e324feaee8fc771348a3acb497ed3dbc3460d4d04b380bd42827f</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_log_os_policy_apply</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a2a2d6767e81f644985204e3699ec84d7</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_log_os_policy_fail</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a7c5a45b26b98705645530602ea75aa72</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_log_os_policy_skip</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>aabe507b7157e7067fac0c56617418f87</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_on_metrics</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a314ae30085c8aa9b55ff9ceaa7513f26</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_on_reaction_end</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a4c0974995edbe3784531c06346e54a75</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_on_reaction_ready</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>aba07bf7a546666765733e4a795ce194d</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_on_reaction_start</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>af0a666d40878c1bb01012208c0f72e6c</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_pick_next</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a949041dc8b9408052df830daa449e305</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_register_worker</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a5da2b07673286ce106e35c42bc00b76b</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_report</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>acaf46a0c3e765eab652830a306b6df75</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_FIFO</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434a24e637e781bd128dc970c44bdd9712fc</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_KEEP</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434afa890ca9ffcb776c21adb8eca4042cc4</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_OTHER</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434af8a936a0cf2a85ff93f43178f4fe8ada</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_sched_policy_t</Name>
+      <APILanguage>c</APILanguage>
+      <Type>enum</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_KEEP</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434afa890ca9ffcb776c21adb8eca4042cc4</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_OTHER</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434af8a936a0cf2a85ff93f43178f4fe8ada</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_FIFO</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434a24e637e781bd128dc970c44bdd9712fc</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_RR</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434a382428bd4ff8e95cff41b08e6aebaaf2</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>MS_SCHED_RR</Name>
+      <APILanguage>c</APILanguage>
+      <Type>econst</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ad53fdf2837b2ec313bf0c985a0d1b434a382428bd4ff8e95cff41b08e6aebaaf2</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_set_enabled</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a53104a6413569b7a6e2e1535e83d4b4c</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_set_log_level</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a638e2ce75385dea55bc447164891a15a</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_should_skip_reaction</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a5fc22756c92552813555bee213bf9974</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_shutdown</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a672405d925ec42ad32f158a0ab4a5809</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_take_os_policy</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>aae9872a1e8a6364bef82b36833ec212d</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
   </Token>
   <Token>
     <TokenIdentifier>

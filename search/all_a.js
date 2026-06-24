@@ -17,7 +17,7 @@ var searchData=
   ['federation_5fmetadata_5ft_14',['federation_metadata_t',['../structfederation__metadata__t.html',1,'federation_metadata_t'],['../group__Federated.html#gae335f4cb4e7d5e88ed712be8cf9592ac',1,'federation_metadata_t:&#160;federate.h']]],
   ['final_5fport_5ftcp_15',['final_port_TCP',['../structrti__remote__t.html#af398be0ec31a58806d978a0670b59fac',1,'rti_remote_t']]],
   ['final_5fport_5fudp_16',['final_port_UDP',['../structrti__remote__t.html#a313ec8858bdf1eb12c8a24c17290afb2',1,'rti_remote_t']]],
-  ['flags_17',['flags',['../structreactor__mode__t.html#a1cfbbf04e57197d289000420ab3742a4',1,'reactor_mode_t::flags'],['../structscheduling__node__t.html#a648268bb3cc4c6f98c214d550b9ebc9e',1,'scheduling_node_t::flags']]],
+  ['flags_17',['flags',['../structreactor__mode__t.html#a1cfbbf04e57197d289000420ab3742a4',1,'reactor_mode_t::flags'],['../structms__worker__info__t.html#a7c73c6b9f3f9697551a9ffe6d27a954e',1,'ms_worker_info_t::flags'],['../structscheduling__node__t.html#a648268bb3cc4c6f98c214d550b9ebc9e',1,'scheduling_node_t::flags']]],
   ['for_20reactions_18',['API for Reactions',['../group__API.html',1,'']]],
   ['forever_19',['FOREVER',['../group__Constants.html#ga75c828ed6c02fcd44084e67a032e422c',1,'tag.h']]],
   ['forever_5fmicrostep_20',['FOREVER_MICROSTEP',['../group__Constants.html#ga43635840119d1af39afff67eb2585248',1,'tag.h']]],

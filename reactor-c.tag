@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
-<tagfile doxygen_version="1.15.0">
+<tagfile doxygen_version="1.17.0">
   <compound kind="file">
     <name>rti_common.h</name>
     <path>/Users/runner/work/reactor-c/reactor-c/core/federated/RTI/</path>
@@ -3645,6 +3645,195 @@
       <anchorfile>group__Internal.html</anchorfile>
       <anchor>ga2e816883471b300567e207c16471502e</anchor>
       <arglist>(lf_semaphore_t *semaphore)</arglist>
+    </member>
+  </compound>
+  <compound kind="file">
+    <name>master_scheduler.h</name>
+    <path>/Users/runner/work/reactor-c/reactor-c/include/core/utils/</path>
+    <filename>master__scheduler_8h.html</filename>
+    <class kind="struct">ms_os_policy_t</class>
+    <class kind="struct">ms_report_t</class>
+    <class kind="struct">ms_worker_info_t</class>
+    <member kind="enumeration">
+      <type></type>
+      <name>ms_log_level_t</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a11d02f1c94f3e324feaee8fc771348a3</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_LEVEL_ERROR</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a11d02f1c94f3e324feaee8fc771348a3a8f0050894619b9d02dde95c824fd17d1</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_LEVEL_WARN</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a11d02f1c94f3e324feaee8fc771348a3a3ad8127598869b363d3f3729101c7af9</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_LEVEL_INFO</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a11d02f1c94f3e324feaee8fc771348a3a3a97f724239244273893c1ed1d459a8a</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_LEVEL_DEBUG</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a11d02f1c94f3e324feaee8fc771348a3acb497ed3dbc3460d4d04b380bd42827f</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumeration">
+      <type></type>
+      <name>ms_sched_policy_t</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ad53fdf2837b2ec313bf0c985a0d1b434</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_SCHED_KEEP</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ad53fdf2837b2ec313bf0c985a0d1b434afa890ca9ffcb776c21adb8eca4042cc4</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_SCHED_OTHER</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ad53fdf2837b2ec313bf0c985a0d1b434af8a936a0cf2a85ff93f43178f4fe8ada</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_SCHED_FIFO</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ad53fdf2837b2ec313bf0c985a0d1b434a24e637e781bd128dc970c44bdd9712fc</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="enumvalue">
+      <name>MS_SCHED_RR</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ad53fdf2837b2ec313bf0c985a0d1b434a382428bd4ff8e95cff41b08e6aebaaf2</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="function">
+      <type>int</type>
+      <name>ms_gettid</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a482606b79cedb0203d1574ac91ffae06</anchor>
+      <arglist>(void)</arglist>
+    </member>
+    <member kind="function">
+      <type>bool</type>
+      <name>ms_init</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a7404d6b7c139c5fbab94aa5197add2f6</anchor>
+      <arglist>(const char *config_path)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_log_os_policy_apply</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a2a2d6767e81f644985204e3699ec84d7</anchor>
+      <arglist>(int worker_id, const ms_os_policy_t *policy, int nice_applied)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_log_os_policy_fail</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a7c5a45b26b98705645530602ea75aa72</anchor>
+      <arglist>(int worker_id, const ms_os_policy_t *policy, const char *operation, int err)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_log_os_policy_skip</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>aabe507b7157e7067fac0c56617418f87</anchor>
+      <arglist>(int worker_id, const ms_os_policy_t *policy, const char *reason)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_on_metrics</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a314ae30085c8aa9b55ff9ceaa7513f26</anchor>
+      <arglist>(int env_id, int worker_id, uint64_t now_ns, int64_t lag_ns, int ready_q_len, int64_t ptdv_ns)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_on_reaction_end</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a4c0974995edbe3784531c06346e54a75</anchor>
+      <arglist>(int env_id, int worker_id, uint64_t reaction_index, long long physical_time_ns, int status)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_on_reaction_ready</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>aba07bf7a546666765733e4a795ce194d</anchor>
+      <arglist>(int env_id, uint64_t reaction_index, long long logical_time_ns, long long deadline_ns, int is_input)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_on_reaction_start</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>af0a666d40878c1bb01012208c0f72e6c</anchor>
+      <arglist>(int env_id, int worker_id, uint64_t reaction_index, long long physical_time_ns)</arglist>
+    </member>
+    <member kind="function">
+      <type>long long</type>
+      <name>ms_pick_next</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a949041dc8b9408052df830daa449e305</anchor>
+      <arglist>(int env_id, int worker_id, long long logical_time_ns)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_register_worker</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a5da2b07673286ce106e35c42bc00b76b</anchor>
+      <arglist>(const ms_worker_info_t *info)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_report</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>acaf46a0c3e765eab652830a306b6df75</anchor>
+      <arglist>(const ms_report_t *report)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_set_enabled</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a53104a6413569b7a6e2e1535e83d4b4c</anchor>
+      <arglist>(bool enabled)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_set_log_level</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a638e2ce75385dea55bc447164891a15a</anchor>
+      <arglist>(ms_log_level_t level)</arglist>
+    </member>
+    <member kind="function">
+      <type>bool</type>
+      <name>ms_should_skip_reaction</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a5fc22756c92552813555bee213bf9974</anchor>
+      <arglist>(int env_id, int worker_id, uint64_t reaction_index, long long logical_time_ns)</arglist>
+    </member>
+    <member kind="function">
+      <type>void</type>
+      <name>ms_shutdown</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a672405d925ec42ad32f158a0ab4a5809</anchor>
+      <arglist>(void)</arglist>
+    </member>
+    <member kind="function">
+      <type>bool</type>
+      <name>ms_take_os_policy</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>aae9872a1e8a6364bef82b36833ec212d</anchor>
+      <arglist>(int worker_id, ms_os_policy_t *out_policy)</arglist>
     </member>
   </compound>
   <compound kind="file">
@@ -7588,6 +7777,137 @@
     </member>
   </compound>
   <compound kind="struct">
+    <name>ms_os_policy_t</name>
+    <filename>structms__os__policy__t.html</filename>
+    <member kind="variable">
+      <type>uint64_t</type>
+      <name>affinity_mask</name>
+      <anchorfile>structms__os__policy__t.html</anchorfile>
+      <anchor>af872e752b475c67b0cc84b7b6b69db0f</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int</type>
+      <name>nice_delta</name>
+      <anchorfile>structms__os__policy__t.html</anchorfile>
+      <anchor>aa2f07f90d6f6e5723676e7c6b38fe679</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int</type>
+      <name>rt_priority</name>
+      <anchorfile>structms__os__policy__t.html</anchorfile>
+      <anchor>a6f4a37b995bea075c5231db1eaa21517</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>ms_sched_policy_t</type>
+      <name>sched_policy</name>
+      <anchorfile>structms__os__policy__t.html</anchorfile>
+      <anchor>a74929110ae11303240f322819537d92c</anchor>
+      <arglist></arglist>
+    </member>
+  </compound>
+  <compound kind="struct">
+    <name>ms_report_t</name>
+    <filename>structms__report__t.html</filename>
+    <member kind="variable">
+      <type>int64_t</type>
+      <name>deadline_misses</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>a30db003eace6e18a76c2f33211e2f073</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int64_t</type>
+      <name>lag_ns</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>a39c2d868f45f4eb05f89a7691623d4a4</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int64_t</type>
+      <name>logical_time_ns</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>ae91ae700aca941dd13c8f0f45dd90770</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int64_t</type>
+      <name>physical_time_ns</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>a3c211ac8342f08781a8fe8274b96501c</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>reaction_id</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>ad5d3f2a045d1a4fcb3bbb29e69a152f1</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>reactor_id</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>a41eba117cda858691cb349fd9c865651</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>ready_q_len</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>aa64f7cccc333765ec3d216efe13618f1</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>worker_id</name>
+      <anchorfile>structms__report__t.html</anchorfile>
+      <anchor>a8584ed4b72c068f6011a68520bd1f553</anchor>
+      <arglist></arglist>
+    </member>
+  </compound>
+  <compound kind="struct">
+    <name>ms_worker_info_t</name>
+    <filename>structms__worker__info__t.html</filename>
+    <member kind="variable">
+      <type>uint32_t</type>
+      <name>flags</name>
+      <anchorfile>structms__worker__info__t.html</anchorfile>
+      <anchor>a7c73c6b9f3f9697551a9ffe6d27a954e</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>const char *</type>
+      <name>name</name>
+      <anchorfile>structms__worker__info__t.html</anchorfile>
+      <anchor>a7f5693f274d2d3ab4423da62c093893f</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>os_pid</name>
+      <anchorfile>structms__worker__info__t.html</anchorfile>
+      <anchor>af8f95dbe2b44543d0933facdf0ab6513</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>os_tid</name>
+      <anchorfile>structms__worker__info__t.html</anchorfile>
+      <anchor>aad4c032fb35dd69d3d4b9268c20279b4</anchor>
+      <arglist></arglist>
+    </member>
+    <member kind="variable">
+      <type>int32_t</type>
+      <name>worker_id</name>
+      <anchorfile>structms__worker__info__t.html</anchorfile>
+      <anchor>ac79ca88b6ca1824c1ba81ecb33878c1f</anchor>
+      <arglist></arglist>
+    </member>
+  </compound>
+  <compound kind="struct">
     <name>object_description_t</name>
     <filename>structobject__description__t.html</filename>
     <member kind="variable">
@@ -8863,12 +9183,12 @@
     <name>API</name>
     <title>API for Reactions</title>
     <filename>group__API.html</filename>
-    <file>logging.h</file>
-    <file>port.h</file>
-    <file>reaction_macros.h</file>
-    <file>reactor.h</file>
-    <file>schedule.h</file>
-    <file>tag.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/logging/api/">logging.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">port.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/api/">reaction_macros.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">reactor.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/api/">schedule.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/tag/api/">tag.h</file>
     <class kind="struct">lf_multiport_iterator_t</class>
     <class kind="struct">lf_token_t</class>
     <class kind="struct">tag_t</class>
@@ -9617,16 +9937,16 @@
     <name>Utilities</name>
     <title>Utilities</title>
     <filename>group__Utilities.html</filename>
-    <file>audio_loop.h</file>
-    <file>deque.h</file>
-    <file>generics.h</file>
-    <file>hashmap.h</file>
-    <file>hashset.h</file>
-    <file>hashset_itr.h</file>
-    <file>pointer_hashmap.h</file>
-    <file>sensor_simulator.h</file>
-    <file>type_converter.h</file>
-    <file>wave_file_reader.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">audio_loop.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">deque.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">generics.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/impl/">hashmap.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/hashset/">hashset.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/hashset/">hashset_itr.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/impl/">pointer_hashmap.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">sensor_simulator.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">type_converter.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/">wave_file_reader.h</file>
     <class kind="struct">deque_t</class>
     <class kind="struct">hashmap_entry_t</class>
     <class kind="struct">hashmap_t</class>
@@ -10066,9 +10386,9 @@
     <name>Platform</name>
     <title>Platform API</title>
     <filename>group__Platform.html</filename>
-    <file>clock.h</file>
-    <file>low_level_platform.h</file>
-    <file>platform.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">clock.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/low_level_platform/api/">low_level_platform.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/platform/api/">platform.h</file>
     <class kind="struct">lf_scheduling_policy_t</class>
     <member kind="typedef">
       <type>void *</type>
@@ -10324,23 +10644,23 @@
     <name>Internal</name>
     <title>Internal</title>
     <filename>group__Internal.html</filename>
-    <file>environment.h</file>
-    <file>lf_semaphore.h</file>
-    <file>lf_token.h</file>
-    <file>lf_types.h</file>
-    <file>logging_macros.h</file>
-    <file>mixed_radix.h</file>
-    <file>pqueue.h</file>
-    <file>pqueue_base.h</file>
-    <file>pqueue_tag.h</file>
-    <file>reactor_common.h</file>
-    <file>reactor_threaded.h</file>
-    <file>scheduler.h</file>
-    <file>scheduler_instance.h</file>
-    <file>scheduler_sync_tag_advance.h</file>
-    <file>tracepoint.h</file>
-    <file>util.h</file>
-    <file>watchdog.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">environment.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/">lf_semaphore.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">lf_token.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">lf_types.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/logging/api/">logging_macros.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">mixed_radix.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/">pqueue.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/">pqueue_base.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/">pqueue_tag.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">reactor_common.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/threaded/">reactor_threaded.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/threaded/">scheduler.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/threaded/">scheduler_instance.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/threaded/">scheduler_sync_tag_advance.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/">tracepoint.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/utils/">util.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/threaded/">watchdog.h</file>
     <class kind="struct">allocation_record_t</class>
     <class kind="struct">environment_t</class>
     <class kind="struct">event_t</class>
@@ -11744,7 +12064,7 @@
     <name>Modal</name>
     <title>Modal</title>
     <filename>group__Modal.html</filename>
-    <file>modes.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/modal_models/">modes.h</file>
     <class kind="struct">mode_environment_t</class>
     <class kind="struct">mode_state_variable_reset_data_t</class>
     <class kind="struct">reactor_mode_state_t</class>
@@ -11856,11 +12176,11 @@
     <name>Federated</name>
     <title>Federated</title>
     <filename>group__Federated.html</filename>
-    <file>clock-sync.h</file>
-    <file>federate.h</file>
-    <file>net_common.h</file>
-    <file>net_util.h</file>
-    <file>socket_common.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/federated/">clock-sync.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/federated/">federate.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/federated/network/">net_common.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/federated/network/">net_util.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/include/core/federated/network/">socket_common.h</file>
     <class kind="struct">federate_instance_t</class>
     <class kind="struct">federation_metadata_t</class>
     <class kind="struct">lf_stat_ll</class>
@@ -12992,10 +13312,10 @@
     <name>Tracing</name>
     <title>Tracing</title>
     <filename>group__Tracing.html</filename>
-    <file>influxdb.h</file>
-    <file>trace.h</file>
-    <file>trace_types.h</file>
-    <file>trace_util.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/tracing/">influxdb.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/trace/api/">trace.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/trace/api/types/">trace_types.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/util/tracing/">trace_util.h</file>
     <class kind="struct">influx_client_t</class>
     <class kind="struct">influx_v2_client_t</class>
     <class kind="struct">trace_record_nodeps_t</class>
@@ -13560,10 +13880,10 @@
     <name>RTI</name>
     <title>RTI</title>
     <filename>group__RTI.html</filename>
-    <file>README.md</file>
-    <file>rti_common.h</file>
-    <file>rti_local.h</file>
-    <file>rti_remote.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/core/federated/RTI/">README.md</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/core/federated/RTI/">rti_common.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/core/federated/RTI/">rti_local.h</file>
+    <file path="/Users/runner/work/reactor-c/reactor-c/core/federated/RTI/">rti_remote.h</file>
     <class kind="struct">enclave_info_t</class>
     <class kind="struct">federate_info_t</class>
     <class kind="struct">minimum_delay_t</class>
@@ -14345,6 +14665,7 @@
     <dir>/Users/runner/work/reactor-c/reactor-c/include/core/utils/hashset</dir>
     <dir>/Users/runner/work/reactor-c/reactor-c/include/core/utils/impl</dir>
     <file>lf_semaphore.h</file>
+    <file>master_scheduler.h</file>
     <file>pqueue.h</file>
     <file>pqueue_base.h</file>
     <file>pqueue_tag.h</file>

@@ -63,10 +63,10 @@ var NAVTREEINDEX =
 "group__Constants.html#ga30e47c4dd44d168c2982d3ec1d4e0825",
 "group__Internal.html#ga58dc2f4a624d2f3030b7e5f3596e58d6",
 "group__RTI.html#gadd2a2ad3c8a9f8e6cde5ecbcb83d7e8d",
-"structenvironment__t.html#acc9c260bcc5e4782b1c73f2844588c6f",
-"structrti__remote__t.html#abe870cbec048a83fe1a114ba08e7a576"
+"structenvironment__t.html#a2e134fb4e7bafe271bed676dc4444d3e",
+"structreaction__t.html#a9dbda39c51da25a63258a83793f97cd8"
 ];
 
-var SYNCONMSG = 'click to disable panel synchronization';
-var SYNCOFFMSG = 'click to enable panel synchronization';
-var LISTOFALLMEMBERS = 'List of all members';
+const SYNCONMSG = 'click to disable panel synchronization';
+const SYNCOFFMSG = 'click to enable panel synchronization';
+const LISTOFALLMEMBERS = 'List of all members';
