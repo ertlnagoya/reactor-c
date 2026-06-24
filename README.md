@@ -1,52 +1,53 @@
-# Master Scheduler for Lingua Franca (Paper-Oriented README)
+# Master Scheduler for Lingua Franca (reactor-c)
 
-## Repository Positioning
+This repository is a fork of [`lf-lang/reactor-c`](https://github.com/lf-lang/reactor-c)
+that adds a **user-space Master Scheduler (MS)** to the Lingua Franca (LF) C
+runtime. It contains the MS *implementation* only; the evaluation harness lives
+in a separate repository (see [Evaluation](#evaluation)).
 
-- This repository contains the implementation and evaluation code for a **user-space Master Scheduler (MS)** on the Lingua Franca (LF) C runtime.
-- The goal is to introduce staged control capabilities (observation, intervention, degradation, OS-level coordination) while **preserving LF logical-time semantics**.
-- It serves as the implementation/evaluation artifact base for the current paper draft (`TechnicalPaper-MS-v1.1.pdf`).
+## What the MS adds
 
-## Paper Positioning (Key Points)
+The MS is a user-space semantic control plane layered on the LF C runtime. It
+introduces staged control capabilities — observation, intervention, controlled
+degradation, and OS-level coordination — while **preserving LF logical-time
+(deterministic reactive) semantics**:
 
-- The MS intervenes only at the LF runtime ready-set boundary to avoid violating deterministic reactive semantics.
-- The design is deployable in user space without kernel/RTOS/hypervisor modifications.
-- Overload handling (degradation and OS policy actions) is explicitly observable via structured logs.
-- The evaluation focuses on:
-  - E1: MS runtime overhead
-  - E2: high-criticality deadline miss-rate comparison across baseline and MS+RT conditions
+- The MS acts only at the LF runtime **ready-set boundary**, so it never alters
+  the deterministic order of reactions for a given tag.
+- It is deployable entirely in **user space**, with no kernel, RTOS, or
+  hypervisor modifications.
+- Overload handling (LC budget shedding / degradation and OS policy actions) is
+  explicitly **observable via structured logs**.
 
-## Current Status
+A phase-by-phase implementation summary (phases 0–4) is in
+[`README_ms.md`](README_ms.md).
 
-- We prepared this work for submission to **Reactive CPS (ReCPS) 2026**, but **missed the submission deadline**.
-- The implementation and evaluation framework are actively maintained for the next submission cycle.
-- ReCPS 2026 event page: [https://www.lf-lang.org/events/recps-2026/](https://www.lf-lang.org/events/recps-2026/)
+## Where the implementation lives
 
-## Source Code and Tags
+- `core/utils/master_scheduler.c`, `include/core/utils/master_scheduler.h` — the MS itself
+- `core/threaded/reactor_threaded.c`, `core/threaded/scheduler_NP.c`,
+  `core/threaded/scheduler_GEDF_NP.c`, `core/threaded/scheduler_adaptive.c`,
+  `core/reactor.c` — the `LF_MS_*` integration hooks
+- `core/utils/CMakeLists.txt` — builds `master_scheduler.c` into the runtime
 
-- Repository: [https://github.com/ertlnagoya/reactor-c](https://github.com/ertlnagoya/reactor-c)
-- Current consolidated release tag: [v1.0](https://github.com/ertlnagoya/reactor-c/tree/v1.0)
-- MS implementation tag: [ms-v1.0](https://github.com/ertlnagoya/reactor-c/tree/ms-v1.0)
-- Evaluation code and artifacts tag: [ms-eval-v1.0](https://github.com/ertlnagoya/reactor-c/tree/ms-eval-v1.0)
+The MS is controlled at run time through `LF_MS_*` environment variables and an
+optional `LF_MS_CONFIG` policy file (see `README_ms.md`).
 
-## Related Documents
+## Evaluation
 
-- Phase-by-phase implementation summary: `README_ms.md`
-- Reproducible performance evaluation procedure: `README_ms_performance_test.md`
-- Main evaluation scripts and artifacts live under `ms-eval/`.
+The evaluation harness (experiments E1–E6, workload generators, plotting) is
+maintained separately and pins this runtime as a submodule:
 
-## Versioning Roadmap
+- **[ertlnagoya/lf-ms-evaluation](https://github.com/ertlnagoya/lf-ms-evaluation)**
+  — pins reactor-c at tag [`ms-eval-v1.0`](https://github.com/ertlnagoya/reactor-c/tree/ms-eval-v1.0).
 
-- We will continue iterative version upgrades with synchronized updates to code, experiments, and manuscript text.
-- Planned improvements include:
-  - stronger reproducibility of experiment settings and scripts
-  - improved statistical robustness of E1/E2
-  - tighter consistency among narrative, figures, and artifacts
-- We will keep publishing fixed tags so paper URLs remain stable and citable.
+## Tags
 
-## Repository Notes
+- [`ms-v1.0`](https://github.com/ertlnagoya/reactor-c/tree/ms-v1.0) — MS implementation
+- [`ms-eval-v1.0`](https://github.com/ertlnagoya/reactor-c/tree/ms-eval-v1.0) — runtime evaluated by `lf-ms-evaluation`
 
-- Generated LF outputs such as `src-gen/`, `bin/`, and temporary evaluation logs are not part of the maintained source history.
-- The maintained evaluation record is the combination of:
-  - scripts under `ms-eval/scripts/`
-  - selected result CSV files under `ms-eval/results/`
-  - selected manuscript figures under `ms-eval/figures/`
+## Upstream reactor-c
+
+`reactor-c` is the C/CCpp runtime for Lingua Franca. Upstream documentation is at
+[lf-lang.org/reactor-c](https://lf-lang.org/reactor-c) and the
+[target language details](https://lf-lang.org/docs/next/reference/target-language-details?target-languages=c).
