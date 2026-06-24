@@ -217,7 +217,12 @@ The runtime applies OS policy only when pressure thresholds are met and `LF_MS_O
 
 ### Testing guidance
 
-Use the reproducible E1/E2 procedure in `README_ms_performance_test.md` to validate Phase 4 behavior. At minimum, check that `os_policy_apply`, `os_policy_skip`, and `os_policy_fail` events are present in `ms.log` under the expected conditions, and verify capability-dependent behavior (`--cap-add SYS_NICE`) for RT/nice operations.
+The evaluation harness and reproducible procedures live in a separate
+repository: [ertlnagoya/lf-ms-evaluation](https://github.com/ertlnagoya/lf-ms-evaluation).
+At the implementation level, validate Phase 4 by checking that
+`os_policy_apply`, `os_policy_skip`, and `os_policy_fail` events are present in
+`ms.log` under the expected conditions, and verify capability-dependent behavior
+(`--cap-add SYS_NICE`) for RT/nice operations.
 
 ---
 
