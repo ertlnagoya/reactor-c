@@ -1,7 +1,0 @@
----- System clock resolution: 1000000 nsec
----- Start execution on Sat Jan 10 15:16:43 2026 ---- plus 508727428 nanoseconds
-WARNING: ---- There are 2 unprocessed future events on the event queue.
-WARNING: ---- The first future event has timestamp (1900000000, 0) after start tag.
-WARNING: ---- Cleared 2 unprocessed events from the event queue.
----- Elapsed logical time (in nsec): 1,800,000,000
----- Elapsed physical time (in nsec): 1,801,619,751

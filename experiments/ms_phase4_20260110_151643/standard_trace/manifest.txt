@@ -1,9 +1,0 @@
-timestamp=2026-01-10T15:16:43+00:00
-git_commit=254b74d82a5e044aa1ef548e19384caa37fb95c5
-uname=Linux af28e7ac28e9 6.12.54-linuxkit #1 SMP Tue Nov  4 21:21:47 UTC 2025 aarch64 aarch64 aarch64 GNU/Linux
-whoami=root
-pwd=/workspace
-APP_BIN=./bin/phase3_degrade_test
-CFG=./lf_ms_config_phase3.txt
-DURATION_SEC=60
-CPU_CORE=3
