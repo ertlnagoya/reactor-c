@@ -28,3 +28,8 @@ util/tracing/trace_util.o
 
 # Generated trace lib
 trace/**/*.a
+
+ms-eval/results/
+ms-eval/logs/
+ms-eval/tcrs-data/
+ms-eval/figures/

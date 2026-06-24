@@ -3,7 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVAL_DIR="${ROOT_DIR}/ms-eval"
+# reactor-c runtime sources (the MS implementation that E3 patches into the
+# generated build) live in the reactor-c submodule by default. Override with
+# REACTOR_C=/path/to/reactor-c. The build (src-gen) still lands under ROOT_DIR.
+REACTOR_C="${REACTOR_C:-${ROOT_DIR}/reactor-c}"
 source "${EVAL_DIR}/scripts/run_common.sh"
+[ -f "${REACTOR_C}/core/utils/master_scheduler.c" ] || \
+  fail "reactor-c runtime not found at REACTOR_C=${REACTOR_C}. Init the submodule: git submodule update --init --recursive"
 
 hc=8
 lc=8
@@ -78,13 +84,13 @@ lf_file="${EVAL_DIR}/lf-gen/e3_overload.lf"
 name="$(basename "$lf_file" .lf)"
 exe=""
 ms_patch_dir="$(mktemp -d "${ROOT_DIR}/.e3_runtime_patch.XXXXXX")"
-cp "${ROOT_DIR}/core/utils/master_scheduler.c" "${ms_patch_dir}/master_scheduler.c"
-cp "${ROOT_DIR}/include/core/utils/master_scheduler.h" "${ms_patch_dir}/master_scheduler.h"
-cp "${ROOT_DIR}/core/threaded/reactor_threaded.c" "${ms_patch_dir}/reactor_threaded.c"
-cp "${ROOT_DIR}/core/threaded/scheduler_NP.c" "${ms_patch_dir}/scheduler_NP.c"
-cp "${ROOT_DIR}/core/threaded/scheduler_adaptive.c" "${ms_patch_dir}/scheduler_adaptive.c"
-cp "${ROOT_DIR}/core/threaded/scheduler_GEDF_NP.c" "${ms_patch_dir}/scheduler_GEDF_NP.c"
-cp "${ROOT_DIR}/core/utils/CMakeLists.txt" "${ms_patch_dir}/core_utils_CMakeLists.txt"
+cp "${REACTOR_C}/core/utils/master_scheduler.c" "${ms_patch_dir}/master_scheduler.c"
+cp "${REACTOR_C}/include/core/utils/master_scheduler.h" "${ms_patch_dir}/master_scheduler.h"
+cp "${REACTOR_C}/core/threaded/reactor_threaded.c" "${ms_patch_dir}/reactor_threaded.c"
+cp "${REACTOR_C}/core/threaded/scheduler_NP.c" "${ms_patch_dir}/scheduler_NP.c"
+cp "${REACTOR_C}/core/threaded/scheduler_adaptive.c" "${ms_patch_dir}/scheduler_adaptive.c"
+cp "${REACTOR_C}/core/threaded/scheduler_GEDF_NP.c" "${ms_patch_dir}/scheduler_GEDF_NP.c"
+cp "${REACTOR_C}/core/utils/CMakeLists.txt" "${ms_patch_dir}/core_utils_CMakeLists.txt"
 trap 'rm -rf "${ms_patch_dir}"' EXIT
 
 if [[ "$skip_compile" -eq 0 ]]; then
@@ -97,18 +103,30 @@ fi
 # lfc may regenerate runtime sources under src-gen; force our local MS runtime
 # implementation into that tree and rebuild so E3 uses the patched scheduler.
 gen_dir="${ROOT_DIR}/src-gen/ms-eval/lf-gen/${name}"
-if [[ "$skip_compile" -eq 0 && -d "${gen_dir}/core/utils" && -d "${gen_dir}/include/core/utils" && -d "${gen_dir}/core/threaded" ]]; then
-  mkdir -p "${ROOT_DIR}/include/core/utils"
-  cp "${ms_patch_dir}/master_scheduler.h" "${ROOT_DIR}/include/core/utils/master_scheduler.h"
-  cp "${ms_patch_dir}/core_utils_CMakeLists.txt" "${gen_dir}/core/utils/CMakeLists.txt"
-  cp "${ms_patch_dir}/master_scheduler.c" "${gen_dir}/core/utils/master_scheduler.c"
-  cp "${ms_patch_dir}/master_scheduler.h" "${gen_dir}/include/core/utils/master_scheduler.h"
-  cp "${ms_patch_dir}/reactor_threaded.c" "${gen_dir}/core/threaded/reactor_threaded.c"
-  cp "${ms_patch_dir}/scheduler_NP.c" "${gen_dir}/core/threaded/scheduler_NP.c"
-  cp "${ms_patch_dir}/scheduler_adaptive.c" "${gen_dir}/core/threaded/scheduler_adaptive.c"
-  cp "${ms_patch_dir}/scheduler_GEDF_NP.c" "${gen_dir}/core/threaded/scheduler_GEDF_NP.c"
-  cmake --build "${gen_dir}/build" --target install --parallel "${build_jobs}"
-  exe="$(find_exe "$name")"
+if [[ "$skip_compile" -eq 0 ]]; then
+  # The src-gen location can vary by lfc version / working directory; if it is
+  # not where we expect, locate the generated tree for this program.
+  if [[ ! -d "${gen_dir}/core/threaded" ]]; then
+    found="$(find "${ROOT_DIR}" -type d -path "*/lf-gen/${name}/core/threaded" 2>/dev/null | head -n1)"
+    [[ -n "$found" ]] && gen_dir="$(dirname "$(dirname "$found")")"
+  fi
+  if [[ -d "${gen_dir}/core/utils" && -d "${gen_dir}/include/core/utils" && -d "${gen_dir}/core/threaded" ]]; then
+    mkdir -p "${REACTOR_C}/include/core/utils"
+    cp "${ms_patch_dir}/master_scheduler.h" "${REACTOR_C}/include/core/utils/master_scheduler.h"
+    cp "${ms_patch_dir}/core_utils_CMakeLists.txt" "${gen_dir}/core/utils/CMakeLists.txt"
+    cp "${ms_patch_dir}/master_scheduler.c" "${gen_dir}/core/utils/master_scheduler.c"
+    cp "${ms_patch_dir}/master_scheduler.h" "${gen_dir}/include/core/utils/master_scheduler.h"
+    cp "${ms_patch_dir}/reactor_threaded.c" "${gen_dir}/core/threaded/reactor_threaded.c"
+    cp "${ms_patch_dir}/scheduler_NP.c" "${gen_dir}/core/threaded/scheduler_NP.c"
+    cp "${ms_patch_dir}/scheduler_adaptive.c" "${gen_dir}/core/threaded/scheduler_adaptive.c"
+    cp "${ms_patch_dir}/scheduler_GEDF_NP.c" "${gen_dir}/core/threaded/scheduler_GEDF_NP.c"
+    cmake --build "${gen_dir}/build" --target install --parallel "${build_jobs}"
+    exe="$(find_exe "$name")"
+  else
+    # Fail loudly: the ms/degrade modes REQUIRE the patched scheduler. Silently
+    # skipping the patch would run an unpatched runtime and produce wrong results.
+    fail "could not locate the generated runtime tree for ${name} under ${ROOT_DIR}/src-gen to apply the MS patch; aborting instead of running an unpatched build (re-run without --skip-compile, or set the correct working directory)."
+  fi
 fi
 
 # Probe runtime reaction indices (which may not be 0..N-1 on this runtime build).
