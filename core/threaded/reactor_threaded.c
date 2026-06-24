@@ -15,6 +15,14 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>   // snprintf
+#include <stdlib.h>   // getenv, atoi
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sched.h>
 
 #include "lf_types.h"
 #include "low_level_platform.h"
@@ -26,6 +34,7 @@
 #include "rti_local.h"
 #include "reactor_common.h"
 #include "watchdog.h"
+#include "master_scheduler.h"
 
 #ifdef FEDERATED
 #include "federate.h"
@@ -33,6 +42,46 @@
 
 // Global variables defined in tag.c and shared across environments:
 extern instant_t start_time;
+
+#if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
+reaction_t* lf_sched_requeue_current_and_pick_by_index(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_index
+);
+reaction_t* lf_sched_requeue_current_and_pick_by_key(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_key
+);
+#endif
+
+static inline uint64_t _ms_hash_str64(const char* s) {
+  uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit offset basis
+  if (s == NULL) return h;
+  while (*s) {
+    h ^= (uint8_t)(*s++);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
+  if (reaction == NULL) return 0;
+  const char* instance = NULL;
+  if (reaction->self != NULL) {
+    instance = lf_reactor_full_name((self_base_t*)reaction->self);
+  }
+  if (instance != NULL && instance[0] != '\0') {
+    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  if (reaction->name != NULL && reaction->name[0] != '\0') {
+    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
+}
 
 /**
  * The maximum amount of time a worker thread should stall
@@ -45,6 +94,152 @@ extern instant_t start_time;
  * Global mutex, used for synchronizing across environments. Mainly used for token-management and tracing
  */
 lf_mutex_t global_mutex;
+
+#define MS_OS_MAX_WORKERS 256
+
+typedef struct {
+  int base_valid;
+  int base_nice;
+  int last_valid;
+  int last_nice;
+  int sched_base_valid;
+  int sched_base_policy;
+  int sched_base_prio;
+  int sched_last_valid;
+  int sched_last_policy;
+  int sched_last_prio;
+} ms_os_worker_state_t;
+
+static ms_os_worker_state_t _ms_os_worker_state[MS_OS_MAX_WORKERS];
+
+static int _ms_os_target_id(void) {
+#ifdef __linux__
+  return ms_gettid();
+#else
+  return (int)getpid();
+#endif
+}
+
+static int _ms_os_clamp_nice(int nice_value) {
+  if (nice_value < -20) return -20;
+  if (nice_value > 19) return 19;
+  return nice_value;
+}
+
+static int _ms_os_read_nice(int id, int* nice_out) {
+  errno = 0;
+  int current = getpriority(PRIO_PROCESS, id);
+  if (errno != 0) return -1;
+  if (nice_out != NULL) *nice_out = current;
+  return 0;
+}
+
+// Return 0 on applied, 1 on no-op (already applied), -1 on failure.
+static int _ms_os_apply_policy(int worker_id, const ms_os_policy_t* policy_in, int* applied_nice) {
+  if (policy_in == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (worker_id < 0 || worker_id >= MS_OS_MAX_WORKERS) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  const int id = _ms_os_target_id();
+  ms_os_worker_state_t* state = &_ms_os_worker_state[worker_id];
+  int changed = 0;
+  int rc = 0;
+  int desired_nice = 0;
+  int desired_sched = SCHED_OTHER;
+  int desired_prio = 0;
+
+  if (!state->base_valid) {
+    if (_ms_os_read_nice(id, &state->base_nice) != 0) {
+      return -1;
+    }
+    state->base_valid = 1;
+  }
+
+  desired_nice = _ms_os_clamp_nice(state->base_nice + policy_in->nice_delta);
+  if (!state->last_valid || state->last_nice != desired_nice) {
+    if (setpriority(PRIO_PROCESS, id, desired_nice) != 0) {
+      return -1;
+    }
+    state->last_valid = 1;
+    state->last_nice = desired_nice;
+    changed = 1;
+  }
+  if (applied_nice != NULL) *applied_nice = desired_nice;
+
+  switch (policy_in->sched_policy) {
+    case MS_SCHED_KEEP:
+      return changed ? 0 : 1;
+    case MS_SCHED_OTHER:
+      desired_sched = SCHED_OTHER;
+      desired_prio = 0;
+      break;
+    case MS_SCHED_FIFO:
+      desired_sched = SCHED_FIFO;
+      desired_prio = policy_in->rt_priority;
+      break;
+    case MS_SCHED_RR:
+      desired_sched = SCHED_RR;
+      desired_prio = policy_in->rt_priority;
+      break;
+    default:
+      errno = EINVAL;
+      return -1;
+  }
+
+#if defined(__APPLE__)
+  // RT scheduler control is Linux-specific in this prototype.
+  return changed ? 0 : 1;
+#else
+  if (!state->sched_base_valid) {
+    errno = 0;
+    int p = sched_getscheduler(id);
+    if (p < 0) {
+      return -1;
+    }
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    rc = sched_getparam(id, &sp);
+    if (rc != 0) {
+      return -1;
+    }
+    state->sched_base_policy = p;
+    state->sched_base_prio = sp.sched_priority;
+    state->sched_base_valid = 1;
+  }
+
+  if ((desired_sched == SCHED_FIFO || desired_sched == SCHED_RR)) {
+    const int pmin = sched_get_priority_min(desired_sched);
+    const int pmax = sched_get_priority_max(desired_sched);
+    if (desired_prio < pmin) desired_prio = pmin;
+    if (desired_prio > pmax) desired_prio = pmax;
+  } else {
+    desired_prio = 0;
+  }
+
+  if (state->sched_last_valid &&
+      state->sched_last_policy == desired_sched &&
+      state->sched_last_prio == desired_prio) {
+    return changed ? 0 : 1;
+  }
+
+  struct sched_param param;
+  memset(&param, 0, sizeof(param));
+  param.sched_priority = desired_prio;
+  rc = sched_setscheduler(id, desired_sched, &param);
+  if (rc != 0) {
+    return -1;
+  }
+  state->sched_last_valid = 1;
+  state->sched_last_policy = desired_sched;
+  state->sched_last_prio = desired_prio;
+  return 0;
+#endif
+}
 
 void _lf_increment_tag_barrier_locked(environment_t* env, tag_t future_tag) {
   assert(env != GLOBAL_ENVIRONMENT);
@@ -764,6 +959,22 @@ static bool _lf_worker_handle_violations(environment_t* env, int worker_number, 
   return violation;
 }
 
+// ---- Phase 0.5: report rate limit ----
+// Report once every N reactions per worker thread.
+// N is configurable with LF_MS_REPORT_EVERY (default: 1).
+static inline bool _ms_should_report(void) {
+  static int report_every = -1; // init once, process-wide
+  if (report_every < 0) {
+    const char* s = getenv("LF_MS_REPORT_EVERY");
+    int v = (s != NULL) ? atoi(s) : 1;
+    report_every = (v > 0) ? v : 1;
+  }
+
+  static __thread uint32_t counter = 0;
+  counter++;
+  return (report_every == 1) || (counter % (uint32_t)report_every == 0);
+}
+
 /**
  * Invoke 'reaction' and schedule any resulting triggered reaction(s) on the
  * reaction queue.
@@ -775,13 +986,69 @@ static bool _lf_worker_handle_violations(environment_t* env, int worker_number, 
  * @param reaction The reaction to invoke.
  */
 static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, reaction_t* reaction) {
+  // ---- Phase 0.5: observability report (before executing reaction) ----
+  if (_ms_should_report()) {
+    ms_report_t rep;
+    memset(&rep, 0, sizeof(rep));
+
+    rep.worker_id = worker_number;
+
+    // env->current_tag.time is "logical time" for the current step
+    rep.logical_time_ns = (int64_t)env->current_tag.time;
+
+    // physical time "now"
+    rep.physical_time_ns = (int64_t)lf_time_physical();
+
+    rep.lag_ns = rep.physical_time_ns - rep.logical_time_ns;
+
+    // Phase0.5: if you can't map IDs yet, keep -1
+    rep.reactor_id = -1;
+    rep.reaction_id = (reaction != NULL) ? reaction->number : -1;
+
+    // Optional metrics (Phase0.5: unknown -> -1)
+    rep.ready_q_len = -1;
+    rep.deadline_misses = 0;
+
+    ms_report(&rep);
+
+    ms_on_metrics(
+        env->id,
+        worker_number,
+        (uint64_t)rep.physical_time_ns,
+        rep.lag_ns,
+        rep.ready_q_len,
+        -1
+    );
+
+    ms_os_policy_t policy;
+    if (ms_take_os_policy(worker_number, &policy)) {
+      int applied_nice = 0;
+      int rc = _ms_os_apply_policy(worker_number, &policy, &applied_nice);
+      if (rc == 0) {
+        ms_log_os_policy_apply(worker_number, &policy, applied_nice);
+      } else if (rc > 0) {
+        ms_log_os_policy_skip(worker_number, &policy, "already_applied");
+      } else {
+        int err = errno;
+        ms_log_os_policy_fail(worker_number, &policy, "setpriority", err);
+      }
+    }
+  }
+  // -------------------------------------------------------------------
+
   LF_PRINT_LOG("Env %u: Worker %d: Invoking reaction %s at elapsed tag " PRINTF_TAG ".", env->id, worker_number,
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
+
+  // Notify execution start
+  ms_on_reaction_start(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical());
+
   _lf_invoke_reaction(env, reaction, worker_number);
 
-  // If the reaction produced outputs, put the resulting triggered
-  // reactions into the queue or execute them immediately.
+  // If the reaction produced outputs, schedule triggered reactions
   schedule_output_reactions(env, reaction, worker_number);
+
+  // Notify execution end
+  ms_on_reaction_end(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical(), 0);
 
   reaction->is_STP_violated = false;
 }
@@ -809,7 +1076,27 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #ifdef FEDERATED
   lf_stall_advance_level_federation(env, 0);
 #endif
+  // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
+    long long pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+    const uint64_t current_key = _ms_reaction_stable_key(current_reaction_to_execute);
+#if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
+    if (pick >= 0 && current_reaction_to_execute != NULL &&
+        (uint64_t)pick != current_key) {
+      reaction_t* picked = lf_sched_requeue_current_and_pick_by_key(
+          env->scheduler, worker_number, current_reaction_to_execute, (uint64_t)pick);
+      if (picked != NULL) {
+        current_reaction_to_execute = picked;
+      }
+    }
+#else
+    // Phase 1-A: ignore the result for now (log-only path)
+    if (pick >= 0) {
+      // The master scheduler requested a specific reaction,
+      // but Phase 1-A does not enforce it yet.
+    }
+#endif
+
     // Got a reaction that is ready to run.
     LF_PRINT_DEBUG("Worker %d: Got from scheduler reaction %s: "
                    "level: %lld, is input reaction: %d, and deadline " PRINTF_TIME ".",
@@ -826,8 +1113,17 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #endif // FEDERATED_CENTRALIZED
 
     bool violation = _lf_worker_handle_violations(env, worker_number, current_reaction_to_execute);
-
+    bool degraded_skip = false;
     if (!violation) {
+      degraded_skip = ms_should_skip_reaction(
+          env->id,
+          worker_number,
+          _ms_reaction_stable_key(current_reaction_to_execute),
+          (long long)env->current_tag.time
+      );
+    }
+
+    if (!violation && !degraded_skip) {
       // Invoke the reaction function.
       _lf_worker_invoke_reaction(env, worker_number, current_reaction_to_execute);
     }
@@ -846,13 +1142,29 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
  * get a PTAG to (0,0) and use network control reactions to handle upstream dependencies
  * @param arg Environment within which the worker should execute.
  */
-static void* worker(void* arg) {
+
+ static void* worker(void* arg) {
   initialize_lf_thread_id();
   environment_t* env = (environment_t*)arg;
   LF_MUTEX_LOCK(&env->mutex);
 
   int worker_number = env->worker_thread_count++;
   LF_PRINT_LOG("Env %u: Worker thread %d started.", env->id, worker_number);
+
+  // ---- Master Scheduler Phase 0.5: worker registration ----
+  ms_worker_info_t info;
+  memset(&info, 0, sizeof(info));
+
+  info.worker_id = worker_number;
+  info.os_pid = (int)getpid();
+  info.os_tid = ms_gettid();
+
+  static __thread char namebuf[64];
+  snprintf(namebuf, sizeof(namebuf), "env%u-worker%d", env->id, worker_number);
+  info.name = namebuf;
+
+  info.flags = 0;
+  ms_register_worker(&info);
 
   // Release mutex and start working.
   LF_MUTEX_UNLOCK(&env->mutex);
@@ -1026,6 +1338,12 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   if (atexit(termination) != 0) {
     lf_print_warning("Failed to register termination function!");
   }
+
+  // Ensure MS shutdown runs on exit(), including user-code exit(0).
+  if (atexit(ms_shutdown) != 0) {
+    lf_print_warning("Failed to register ms_shutdown with atexit!");
+  }
+
   // The above handles only "normal" termination (via a call to exit).
   // As a consequence, we need to also trap ctrl-C, which issues a SIGINT,
   // and cause it to call exit.
@@ -1078,6 +1396,12 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   environment_t* envs;
   int num_envs = _lf_get_environments(&envs);
 
+  // Invode initialization of master scheduler
+  bool rc = ms_init(NULL);
+  if (rc != true) {
+    lf_print_warning("ms_init failed (master scheduler disabled?)");
+  }
+
 #if defined LF_ENCLAVES
   initialize_local_rti(envs, num_envs);
 #endif
@@ -1129,6 +1453,7 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
     LF_PRINT_LOG("---- All environment worker threads exited successfully.");
   }
   _lf_normal_termination = true;
+
   return ret;
 }
 
@@ -1152,4 +1477,5 @@ int lf_critical_section_exit(environment_t* env) {
     return lf_mutex_unlock(&env->mutex);
   }
 }
+
 #endif

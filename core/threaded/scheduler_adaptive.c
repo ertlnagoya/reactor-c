@@ -18,7 +18,9 @@
 #include "scheduler_sync_tag_advance.h"
 #include "scheduler.h"
 #include "environment.h"
+#include "reactor.h"
 #include "util.h"
+#include "master_scheduler.h"
 
 #ifdef FEDERATED
 #include "federate.h"
@@ -81,6 +83,7 @@ typedef struct {
   reaction_t*** reactions_by_worker;
   /** The total number of workers active, including those who have finished their work. */
   size_t num_workers;
+  lf_mutex_t assignments_lock;
 } worker_assignments_t;
 
 typedef struct {
@@ -102,6 +105,31 @@ typedef struct custom_scheduler_data_t {
   bool should_stop;
   size_t level_counter;
 } custom_scheduler_data_t;
+
+static inline uint64_t _ms_hash_str64(const char* s) {
+  uint64_t h = 1469598103934665603ULL;
+  if (s == NULL) return h;
+  while (*s) {
+    h ^= (uint8_t)(*s++);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
+  if (reaction == NULL) return 0;
+  const char* instance = NULL;
+  if (reaction->self != NULL) {
+    instance = lf_reactor_full_name((self_base_t*)reaction->self);
+  }
+  if (instance != NULL && instance[0] != '\0') {
+    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  if (reaction->name != NULL && reaction->name[0] != '\0') {
+    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
+  }
+  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
+}
 
 ///////////////////////// Scheduler Private Functions ///////////////////////////
 
@@ -159,6 +187,7 @@ static size_t get_num_reactions(lf_scheduler_t* scheduler) {
 
 static void worker_assignments_init(lf_scheduler_t* scheduler, size_t number_of_workers, sched_params_t* params) {
   worker_assignments_t* worker_assignments = scheduler->custom_data->worker_assignments;
+  LF_MUTEX_INIT(&worker_assignments->assignments_lock);
   worker_assignments->num_levels = params->num_reactions_per_level_size;
   worker_assignments->max_num_workers = number_of_workers;
   worker_assignments->reactions_by_worker_by_level =
@@ -206,26 +235,36 @@ static void worker_assignments_free(lf_scheduler_t* scheduler) {
 static reaction_t* get_reaction(lf_scheduler_t* scheduler, size_t worker) {
   worker_assignments_t* worker_assignments = scheduler->custom_data->worker_assignments;
 #ifndef FEDERATED
+  LF_MUTEX_LOCK(&worker_assignments->assignments_lock);
   int index = lf_atomic_add_fetch(worker_assignments->num_reactions_by_worker + worker, -1);
   if (index >= 0) {
-    return worker_assignments->reactions_by_worker[worker][index];
+    reaction_t* ret = worker_assignments->reactions_by_worker[worker][index];
+    LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
+    return ret;
   }
   worker_assignments->num_reactions_by_worker[worker] = 0;
+  LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
   return NULL;
 #else
   // This is necessary for federated programs because reactions may be inserted into the current
   // level.
+  LF_MUTEX_LOCK(&worker_assignments->assignments_lock);
   int old_num_reactions;
   int current_num_reactions = worker_assignments->num_reactions_by_worker[worker];
   int index;
   do {
     old_num_reactions = current_num_reactions;
     if (old_num_reactions <= 0)
-      return NULL;
+      break;
   } while ((current_num_reactions =
                 lf_atomic_val_compare_and_swap(worker_assignments->num_reactions_by_worker + worker, old_num_reactions,
                                                (index = old_num_reactions - 1))) != old_num_reactions);
-  return worker_assignments->reactions_by_worker[worker][index];
+  reaction_t* ret = NULL;
+  if (old_num_reactions > 0) {
+    ret = worker_assignments->reactions_by_worker[worker][index];
+  }
+  LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
+  return ret;
 #endif
 }
 
@@ -280,9 +319,11 @@ static void worker_assignments_put(lf_scheduler_t* scheduler, reaction_t* reacti
   hash = (hash ^ (hash >> 27)) * 0x94d049bb133111eb;
   hash = hash ^ (hash >> 31);
   size_t worker = hash % worker_assignments->num_workers_by_level[level];
+  LF_MUTEX_LOCK(&worker_assignments->assignments_lock);
   size_t num_preceding_reactions =
       lf_atomic_fetch_add(&worker_assignments->num_reactions_by_worker_by_level[level][worker], 1);
   worker_assignments->reactions_by_worker_by_level[level][worker][num_preceding_reactions] = reaction;
+  LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
 }
 
 ///////////////////////// Private Worker States Functions ///////////////////////////
@@ -717,6 +758,68 @@ reaction_t* lf_sched_get_ready_reaction(lf_scheduler_t* scheduler, int worker_nu
   return (reaction_t*)ret;
 }
 
+reaction_t* lf_sched_requeue_current_and_pick_by_index(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_index
+) {
+  (void)worker_number; // Reserved for future use.
+  if (scheduler == NULL || scheduler->custom_data == NULL || current == NULL) return current;
+
+  worker_assignments_t* worker_assignments = scheduler->custom_data->worker_assignments;
+  reaction_t* target = NULL;
+  LF_MUTEX_LOCK(&worker_assignments->assignments_lock);
+  for (size_t worker = 0; worker < worker_assignments->num_workers; worker++) {
+    size_t count = worker_assignments->num_reactions_by_worker[worker];
+    for (size_t i = 0; i < count; i++) {
+      reaction_t* candidate = worker_assignments->reactions_by_worker[worker][i];
+      if (candidate == NULL) continue;
+      if ((uint64_t)candidate->index == reaction_index) {
+        target = candidate;
+        worker_assignments->reactions_by_worker[worker][i] = current;
+        break;
+      }
+    }
+    if (target != NULL) {
+      break;
+    }
+  }
+  LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
+  return (target != NULL) ? target : current;
+}
+
+reaction_t* lf_sched_requeue_current_and_pick_by_key(
+    lf_scheduler_t* scheduler,
+    int worker_number,
+    reaction_t* current,
+    uint64_t reaction_key
+) {
+  (void)worker_number; // Reserved for future use.
+  if (scheduler == NULL || scheduler->custom_data == NULL || current == NULL) return current;
+
+  worker_assignments_t* worker_assignments = scheduler->custom_data->worker_assignments;
+  reaction_t* target = NULL;
+  LF_MUTEX_LOCK(&worker_assignments->assignments_lock);
+  for (size_t worker = 0; worker < worker_assignments->num_workers; worker++) {
+    size_t count = worker_assignments->num_reactions_by_worker[worker];
+    for (size_t i = 0; i < count; i++) {
+      reaction_t* candidate = worker_assignments->reactions_by_worker[worker][i];
+      if (candidate == NULL) continue;
+      if (_ms_reaction_stable_key(candidate) == reaction_key) {
+        target = candidate;
+        worker_assignments->reactions_by_worker[worker][i] = current;
+        break;
+      }
+    }
+    if (target != NULL) {
+      break;
+    }
+  }
+  LF_MUTEX_UNLOCK(&worker_assignments->assignments_lock);
+  return (target != NULL) ? target : current;
+}
+
 void lf_sched_done_with_reaction(size_t worker_number, reaction_t* done_reaction) {
   (void)worker_number;
   LF_ASSERT(done_reaction->status != inactive, "");
@@ -727,6 +830,12 @@ void lf_scheduler_trigger_reaction(lf_scheduler_t* scheduler, reaction_t* reacti
   LF_ASSERT(worker_number >= -1, "Sched: Invalid worker number");
   if (!lf_atomic_bool_compare_and_swap((int*)&reaction->status, inactive, queued))
     return;
+  ms_on_reaction_ready(
+      scheduler->env->id,
+      _ms_reaction_stable_key(reaction),
+      (long long)scheduler->env->current_tag.time,
+      (long long)reaction->deadline,
+      (int)reaction->is_an_input_reaction);
   worker_assignments_put(scheduler, reaction);
 }
 #endif // defined SCHEDULER && SCHEDULER == SCHED_ADAPTIVE

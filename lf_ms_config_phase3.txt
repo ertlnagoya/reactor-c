@@ -1,0 +1,9 @@
+# Phase 3 test config
+degrade_action=skip
+budget_type=reaction_count
+budget_window_ns=1000000000
+default_budget=-1
+
+# reaction,env_id,reaction_index,criticality,budget
+reaction,0,18446744073709486080,high,1000
+reaction,0,18446744073709486081,low,1

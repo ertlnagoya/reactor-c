@@ -17,6 +17,7 @@
 #include "low_level_platform.h"
 #include "reactor_common.h"
 #include "environment.h"
+#include "master_scheduler.h"
 
 // Embedded platforms with no command line interface shouldnt have signals
 #if !defined(NO_CLI)
@@ -135,6 +136,20 @@ int _lf_do_step(environment_t* env) {
     // lf_print_snapshot();
     reaction_t* reaction = (reaction_t*)pqueue_pop(env->reaction_q);
     reaction->status = running;
+
+    // ---- Phase 0.5: observability report (single-threaded) ----
+    ms_report_t rep;
+    memset(&rep, 0, sizeof(rep));
+    rep.worker_id = 0;
+    rep.logical_time_ns  = (int64_t)env->current_tag.time;
+    rep.physical_time_ns = (int64_t)lf_time_physical();
+    rep.lag_ns = rep.physical_time_ns - rep.logical_time_ns;
+    rep.reactor_id = -1;
+    rep.reaction_id = (reaction != NULL) ? reaction->number : -1;
+    rep.ready_q_len = (int)pqueue_size(env->reaction_q);
+    rep.deadline_misses = 0;
+    ms_report(&rep);
+    // -----------------------------------------------------------
 
     LF_PRINT_LOG("Invoking reaction %s at elapsed logical tag " PRINTF_TAG ".", reaction->name,
                  env->current_tag.time - start_time, env->current_tag.microstep);
@@ -319,6 +334,21 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
 #ifndef NO_CLI
     signal(SIGINT, exit);
 #endif
+    // ---- Master Scheduler: init + single-thread "worker" register (once) ----
+    bool rc = ms_init(NULL);
+    if (rc != true) {
+      lf_print_warning("ms_init failed (master scheduler disabled?)");
+    }
+
+    ms_worker_info_t wi = {
+      .worker_id = 0,
+      .os_pid = (int)getpid(),
+      .os_tid = ms_gettid(),
+      .name = "main",
+      .flags = 0
+    };
+    ms_register_worker(&wi);
+
     // Create and initialize the environment
     lf_create_environments(); // code-generated function
     environment_t* env;
@@ -358,8 +388,12 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
         ;
     }
     _lf_normal_termination = true;
+    // Invode shutdown of master scheduler
+    ms_shutdown();
     return 0;
   } else {
+    // Invode shutdown of master scheduler
+    ms_shutdown();
     return -1;
   }
 }

@@ -6,6 +6,15 @@
 **/.DS_Store
 /core/federated/RTI/build/
 /cmake-build-debug/
+/reactor-c.code-workspace
+/src-gen/
+/bin/
+/include/e1_microbench_N*/
+/include/e3_overload/
+/include/phase3_degrade_test/
+/ms-eval/logs/
+/ms-eval/lf-gen/
+/ms-eval/scripts/__pycache__/
 
 # Generated trace files
 *.lft
@@ -19,3 +28,8 @@ util/tracing/trace_util.o
 
 # Generated trace lib
 trace/**/*.a
+
+ms-eval/results/
+ms-eval/logs/
+ms-eval/tcrs-data/
+ms-eval/figures/
