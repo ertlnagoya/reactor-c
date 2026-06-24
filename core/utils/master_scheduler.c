@@ -159,9 +159,14 @@ static int _ms_degrade_ready_q_len_threshold = -1;
 // When set, HC reactions are always picked before LC (criticality-monotonic),
 // not only during transient overload pressure. Opt-in via LF_MS_HC_STRICT_PRIORITY.
 static bool _ms_hc_strict_priority = false;
+// Diagnostic: when LF_MS_DEGRADE_DEBUG=1, ms_should_skip_reaction logs the gating
+// state (pressure / has_hc_ready / criticality) for every evaluation, to root-
+// cause why degradation does/doesn't fire. Off by default (no normal-run impact).
+static bool _ms_degrade_debug = false;
 // Env-level LC budget accounting for graceful (partial) shedding. Active when
 // _ms_policy.default_budget >= 0: at most default_budget LC reactions are kept
-// per budget_window_ns while degrade pressure is active; the rest are shed.
+// PER LOGICAL TAG while degrade pressure is active; the rest are shed. The first
+// array holds the current tag's logical time, the second the count used in it.
 static int64_t _ms_env_lc_window_start_ns[MS_MAX_ENVS] = {0};
 static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 
@@ -527,6 +532,7 @@ static void _ms_os_load_env(void) {
     _ms_degrade_ready_q_len_threshold = atoi(drq);
   }
   _ms_hc_strict_priority = _ms_is_true(getenv("LF_MS_HC_STRICT_PRIORITY"));
+  _ms_degrade_debug = _ms_is_true(getenv("LF_MS_DEGRADE_DEBUG"));
   _ms_partition_hc_workers = 0;
   const char* phc = getenv("LF_MS_HC_WORKERS");
   if (phc != NULL && phc[0] != '\0') {
@@ -1087,13 +1093,36 @@ bool ms_should_skip_reaction(
 
   int should_skip = 0;
   int ready_count = 0;
-  int has_hc_ready = 0;
   int missing_metadata = 0;
   char ready_buf[1024];
   ready_buf[0] = '\0';
 
   pthread_mutex_lock(&_ms_lock);
   ms_ready_set_t* set = _ms_get_ready_set(env_id);
+
+  if (_ms_degrade_debug) {
+    int dbg_pressure = (set != NULL && env_id >= 0 && env_id < MS_MAX_ENVS)
+                           ? _ms_env_degrade_pressure[env_id] : -1;
+    ms_reaction_policy_t* dbg_pol = _ms_find_policy(env_id, reaction_index);
+    int dbg_crit = dbg_pol ? (int)dbg_pol->criticality : -1;
+    int dbg_degr = dbg_pol ? (dbg_pol->degradable ? 1 : 0) : -1;
+    int dbg_hcr = 0, dbg_rc = 0;
+    if (set != NULL) {
+      for (int i = 0; i < set->count; i++) {
+        if (set->entries[i].state == MS_RUNNING) continue;
+        dbg_rc++;
+        ms_reaction_policy_t* ep = _ms_find_policy(env_id, set->entries[i].reaction_index);
+        if (ep != NULL && ep->criticality == MS_CRIT_HIGH) dbg_hcr = 1;
+      }
+    }
+    pthread_mutex_unlock(&_ms_lock);
+    _ms_logf(MS_LEVEL_WARN,
+             "event=degrade_dbg env=%d rid=%llu crit=%d degradable=%d pressure=%d has_hc_ready=%d ready_count=%d",
+             env_id, (unsigned long long)reaction_index, dbg_crit, dbg_degr,
+             dbg_pressure, dbg_hcr, dbg_rc);
+    pthread_mutex_lock(&_ms_lock);
+  }
+
   if (set == NULL ||
       env_id < 0 || env_id >= MS_MAX_ENVS ||
       !_ms_env_degrade_pressure[env_id]) {
@@ -1116,28 +1145,29 @@ bool ms_should_skip_reaction(
                used == 0 ? "" : "|",
                (unsigned long long)entry->reaction_index);
     }
-    ms_reaction_policy_t* entry_pol = _ms_find_policy(env_id, entry->reaction_index);
-    if (entry_pol == NULL) continue;
-    if (entry_pol->criticality == MS_CRIT_HIGH) {
-      has_hc_ready = 1;
-    }
   }
 
+  // Pressure-driven shedding: under degrade pressure, shed LC reactions beyond
+  // the per-tag budget regardless of whether an HC is concurrently ready. (The
+  // earlier has_hc_ready gate only shed LC that overlapped a ready HC, which is
+  // unsatisfiable under sequential/low-worker execution where HC runs first, so
+  // shedding under-fired and backlog was not contained at w1/w2.)
   if (!missing_metadata &&
       pol != NULL &&
       pol->criticality == MS_CRIT_LOW &&
-      pol->degradable &&
-      has_hc_ready) {
+      pol->degradable) {
     // Graceful budget: when default_budget >= 0, keep up to that many LC
-    // reactions per budget window and shed only the surplus. When < 0, fall
-    // back to all-or-nothing shedding under pressure (legacy behaviour).
+    // reactions PER LOGICAL TAG and shed only the surplus. A per-tag budget is
+    // independent of period, worker count and reaction duration; an earlier
+    // time-window budget (budget_window_ns) failed because, when the window was
+    // shorter than the per-tag span, it reset between sequentially executed LC
+    // reactions and never limited anything (so shedding only fired at high
+    // worker counts where LC ran in parallel within one window). When
+    // default_budget < 0 we fall back to all-or-nothing shedding under pressure.
     int allow_within_budget = 0;
     if (_ms_policy.default_budget >= 0 && env_id >= 0 && env_id < MS_MAX_ENVS) {
-      int64_t now = _ms_now_mono_ns();
-      int64_t window = _ms_policy.budget_window_ns > 0 ? _ms_policy.budget_window_ns : 1;
-      if (_ms_env_lc_window_start_ns[env_id] == 0 ||
-          now - _ms_env_lc_window_start_ns[env_id] >= window) {
-        _ms_env_lc_window_start_ns[env_id] = now;
+      if (_ms_env_lc_window_start_ns[env_id] != (int64_t)logical_time_ns) {
+        _ms_env_lc_window_start_ns[env_id] = (int64_t)logical_time_ns;
         _ms_env_lc_used_in_window[env_id] = 0;
       }
       if (_ms_env_lc_used_in_window[env_id] < _ms_policy.default_budget) {

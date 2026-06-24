@@ -15,8 +15,11 @@ preamble {{=
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 static int64_t ms_eval_now_mono_ns(void) {{
   struct timespec ts;
@@ -24,28 +27,91 @@ static int64_t ms_eval_now_mono_ns(void) {{
   return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }}
 
-static FILE* ms_eval_log_fp = NULL;
-static int ms_eval_log_opened = 0;
+// Logging uses a raw O_APPEND fd plus an in-memory batch buffer, NOT stdio.
+// Rationale: the LF target preamble is emitted as `static` into EACH reactor's
+// generated header, so every reactor translation unit gets its OWN copy of the
+// logging state (fd, buffer, mutex). A shared stdio FILE*/mutex is therefore
+// impossible, and buffered stdio flushes from different reactors interleave into
+// corrupted JSON lines. Here each flush is a single write() of <= one buffer of
+// whole records; on Linux a write() to a regular file is atomic (inode lock) and
+// O_APPEND targets EOF atomically, so records from different reactors never
+// interleave regardless of the duplicated state. Batching also removes the
+// per-reaction synchronous I/O that previously dominated the measured deadline
+// lag (especially on a Docker bind-mounted log directory).
+#define MS_EVAL_LOG_BUF_SZ 4096
+static int ms_eval_log_fd = -1;
+static char ms_eval_log_buf[MS_EVAL_LOG_BUF_SZ];
+static size_t ms_eval_log_buf_len = 0;
+static pthread_once_t ms_eval_log_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t ms_eval_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void ms_eval_log_open_if_needed(void) {{
-  if (ms_eval_log_opened) return;
-  ms_eval_log_opened = 1;
+static void ms_eval_log_do_open(void) {{
   const char* log_path = getenv("LF_APP_LOG");
   if (log_path == NULL || log_path[0] == '\\0') return;
-  ms_eval_log_fp = fopen(log_path, "a");
+  ms_eval_log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+}}
+
+static void ms_eval_log_open_if_needed(void) {{
+  pthread_once(&ms_eval_log_once, ms_eval_log_do_open);
+}}
+
+// In observe-only probe runs (LF_MS_OBSERVE_ONLY=1) the process is killed by a
+// short `timeout`, so batched output could be lost before the runtime-index
+// probe reads it. Flush per record only in that (non-measured) case.
+static int ms_eval_flush_each = -1;
+static int ms_eval_should_flush_each(void) {{
+  if (ms_eval_flush_each < 0) {{
+    const char* v = getenv("LF_MS_OBSERVE_ONLY");
+    ms_eval_flush_each = (v != NULL && v[0] == '1') ? 1 : 0;
+  }}
+  return ms_eval_flush_each;
+}}
+
+// Caller must hold ms_eval_log_lock. One write() per flush keeps the append
+// atomic against other reactors writing the same file.
+static void ms_eval_log_flush_locked(void) {{
+  if (ms_eval_log_fd >= 0 && ms_eval_log_buf_len > 0) {{
+    ssize_t w = write(ms_eval_log_fd, ms_eval_log_buf, ms_eval_log_buf_len);
+    (void)w;
+    ms_eval_log_buf_len = 0;
+  }}
 }}
 
 static void ms_eval_append_json(const char* fmt, ...) {{
   ms_eval_log_open_if_needed();
-  if (ms_eval_log_fp == NULL) return;
-  pthread_mutex_lock(&ms_eval_log_lock);
+  if (ms_eval_log_fd < 0) return;
+  char rec[1024];
   va_list args;
   va_start(args, fmt);
-  vfprintf(ms_eval_log_fp, fmt, args);
+  int n = vsnprintf(rec, sizeof(rec) - 1, fmt, args);
   va_end(args);
-  fputc('\\n', ms_eval_log_fp);
-  fflush(ms_eval_log_fp);
+  if (n < 0) return;
+  if (n > (int)sizeof(rec) - 1) n = (int)sizeof(rec) - 1;
+  rec[n++] = '\\n';
+  pthread_mutex_lock(&ms_eval_log_lock);
+  if (ms_eval_log_buf_len + (size_t)n > sizeof(ms_eval_log_buf)) {{
+    ms_eval_log_flush_locked();
+  }}
+  if ((size_t)n > sizeof(ms_eval_log_buf)) {{
+    ssize_t w = write(ms_eval_log_fd, rec, (size_t)n);
+    (void)w;
+  }} else {{
+    memcpy(ms_eval_log_buf + ms_eval_log_buf_len, rec, (size_t)n);
+    ms_eval_log_buf_len += (size_t)n;
+  }}
+  if (ms_eval_should_flush_each()) {{
+    ms_eval_log_flush_locked();
+  }}
+  pthread_mutex_unlock(&ms_eval_log_lock);
+}}
+
+static void ms_eval_log_close(void) {{
+  pthread_mutex_lock(&ms_eval_log_lock);
+  ms_eval_log_flush_locked();
+  if (ms_eval_log_fd >= 0) {{
+    close(ms_eval_log_fd);
+    ms_eval_log_fd = -1;
+  }}
   pthread_mutex_unlock(&ms_eval_log_lock);
 }}
 
@@ -125,6 +191,22 @@ static int ms_eval_get_env_int(const char* key, int fallback) {{
   return v ? atoi(v) : fallback;
 }}
 
+// BUG FIX: the LF target preamble is emitted as `static` into EACH reactor's
+// generated header, so every reactor translation unit has its OWN copy of
+// ms_eval_load_factor. The startup reaction (in the main reactor's TU) updated
+// only the main TU's copy from MS_EVAL_LOAD_FACTOR, while the LCWorker TU's copy
+// stayed at the compile-time default (1.0). The load sweep therefore never
+// reached the LC work. Read the env per-TU (lazily, cached) so every TU uses the
+// real load factor regardless of the duplication.
+static double ms_eval_load_factor_cached = -1.0;
+static double ms_eval_get_load_factor(void) {{
+  if (ms_eval_load_factor_cached < 0.0) {{
+    ms_eval_load_factor_cached =
+        ms_eval_get_env_double("MS_EVAL_LOAD_FACTOR", ms_eval_load_factor);
+  }}
+  return ms_eval_load_factor_cached;
+}}
+
 static int ms_eval_reaction_start_logging_enabled(void) {{
   if (ms_eval_log_reaction_start_enabled < 0) {{
     ms_eval_log_reaction_start_enabled = ms_eval_get_env_int("MS_EVAL_LOG_REACTION_START", 0);
@@ -148,6 +230,9 @@ reactor HCWorker(id:int = 0) {{
                   physical_end > logical + (int64_t)ms_eval_hc_deadline_us * 1000LL);
     ms_eval_log_reaction_end(reaction_id, logical, physical_end, ms_eval_hc_deadline_us, missed);
   =}}
+  reaction(shutdown) {{=
+    ms_eval_log_close();
+  =}}
 }}
 
 reactor LCWorker(id:int = 0) {{
@@ -159,11 +244,14 @@ reactor LCWorker(id:int = 0) {{
     if (ms_eval_reaction_start_logging_enabled()) {{
       ms_eval_log_reaction_start(reaction_id, logical, physical);
     }}
-    ms_eval_busy_wait_us((int)(ms_eval_lc_work_us * ms_eval_load_factor));
+    ms_eval_busy_wait_us((int)(ms_eval_lc_work_us * ms_eval_get_load_factor()));
     int64_t physical_end = (int64_t)lf_time_physical();
     int missed = (ms_eval_lc_deadline_us > 0 &&
                   physical_end > logical + (int64_t)ms_eval_lc_deadline_us * 1000LL);
     ms_eval_log_reaction_end(reaction_id, logical, physical_end, ms_eval_lc_deadline_us, missed);
+  =}}
+  reaction(shutdown) {{=
+    ms_eval_log_close();
   =}}
 }}
 
@@ -176,6 +264,9 @@ reactor Stopper {{
       lf_request_stop();
     }}
   =}}
+  reaction(shutdown) {{=
+    ms_eval_log_close();
+  =}}
 }}
 
 main reactor {{
@@ -185,6 +276,10 @@ main reactor {{
     ms_eval_log_run_start(mode, {total_reactions}, ms_eval_steps,
                           ms_eval_hc_work_us, ms_eval_hc_deadline_us,
                           ms_eval_load_factor, ms_eval_seed);
+  =}}
+
+  reaction(shutdown) {{=
+    ms_eval_log_close();
   =}}
 
 {instances_block}

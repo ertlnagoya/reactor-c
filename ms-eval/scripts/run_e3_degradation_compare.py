@@ -2,13 +2,15 @@
 import argparse
 import csv
 import math
+import os
 import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
 
-ROOT = Path("/Users/yutaka/program/reactor-c")
+# Override with TCRS_REACTOR for a bare-metal/non-macOS host (e.g., Raspberry Pi).
+ROOT = Path(os.environ.get("TCRS_REACTOR", "/Users/yutaka/program/reactor-c"))
 PARSE_E3 = ROOT / "ms-eval/scripts/parse_e3.py"
 
 
@@ -53,6 +55,8 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--hc", type=int, default=2)
     ap.add_argument("--lc", type=int, default=6)
+    ap.add_argument("--lc-budget", type=int, default=4)
+    ap.add_argument("--window-ns", type=int, default=1000000)
     ap.add_argument("--hc-work-us", type=int, default=180)
     ap.add_argument("--lc-work-us", type=int, default=220)
     ap.add_argument("--deadline-us", type=int, default=900)
@@ -74,6 +78,7 @@ def main() -> None:
             f"--steps {args.steps} --hc-work-us {args.hc_work_us} --lc-work-us {args.lc_work_us} "
             f"--hc-deadline-us {args.deadline_us} --lc-deadline-us {args.deadline_us} "
             f"--period-us {args.period_us} --load-factors {load_s} "
+            f"--lc-budget {args.lc_budget} --window-ns {args.window_ns} "
             f"--degrade-lag-ns {args.degrade_lag_ns} --degrade-ready-q-len {args.degrade_ready_q_len} "
             f"--skip-compile {skip_compile}"
         )
