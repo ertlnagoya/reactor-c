@@ -9,8 +9,9 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
 
-# Override with TCRS_REACTOR for a bare-metal/non-macOS host (e.g., Raspberry Pi).
-ROOT = Path(os.environ.get("TCRS_REACTOR", "/Users/yutaka/program/reactor-c"))
+# This script lives in <repo>/ms-eval/scripts, so the repo root is two levels up.
+# Override with TCRS_REACTOR if running from elsewhere.
+ROOT = Path(os.environ.get("TCRS_REACTOR", str(Path(__file__).resolve().parents[2])))
 PARSE_E3 = ROOT / "ms-eval/scripts/parse_e3.py"
 
 
