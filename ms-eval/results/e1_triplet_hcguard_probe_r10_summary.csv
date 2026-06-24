@@ -1,2 +1,0 @@
-n,policy_avg_mean,policy_avg_ci_low,policy_avg_ci_high,policy_os_mean,policy_os_ci_low,policy_os_ci_high,delta_raw_mean,delta_raw_ci_low,delta_raw_ci_high,delta_norm_mean,delta_norm_ci_low,delta_norm_ci_high,p_value_raw_policy_os_vs_policy_avg,p_value_norm_policy_os_vs_policy_avg,policy_os_os_apply_mean
-10,16.68035,3.4737320545535955,29.886967945446408,39.405,12.226681460146217,66.58331853985379,22.72465,3.2423996312983974,42.206900368701604,-2.7278999999999995,-13.000852990817435,7.545052990817435,0.1535923203839808,0.6608669566521674,1

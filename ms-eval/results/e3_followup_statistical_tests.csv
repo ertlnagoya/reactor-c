@@ -1,8 +1,0 @@
-load_factor,metric,comparison,n_nonzero,w_plus,p_value_two_sided,effect_size_r,baseline_mean,degrade_mean
-0.40,hc_miss_rate,baseline_vs_degrade,4,2.000,0.361310,0.456435,0.394,3.576
-0.60,hc_miss_rate,baseline_vs_degrade,1,1.000,1.000000,0.000000,3.333,0.000
-0.80,hc_miss_rate,baseline_vs_degrade,3,2.500,1.000000,0.000000,0.273,0.333
-1.00,hc_miss_rate,baseline_vs_degrade,6,13.500,0.595076,0.216982,1.545,1.364
-1.20,hc_miss_rate,baseline_vs_degrade,3,3.000,1.000000,0.000000,0.182,0.242
-1.60,hc_miss_rate,baseline_vs_degrade,6,7.000,0.523609,0.260378,1.485,1.455
-2.00,hc_miss_rate,baseline_vs_degrade,8,26.000,0.290646,0.373602,4.758,1.939

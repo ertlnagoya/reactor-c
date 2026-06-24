@@ -1,9 +1,0 @@
-mode,load_factor,steps,hc_miss_rate,lc_degraded_count,fallback_count,violations
-baseline,0.80,120,100.000,0,0,0
-baseline,1.00,120,100.000,0,0,0
-baseline,1.20,120,99.896,0,0,0
-baseline,1.40,120,99.688,0,0,0
-degrade,0.80,120,100.000,260,0,0
-degrade,1.00,120,100.000,136,0,0
-degrade,1.20,120,100.000,104,0,0
-degrade,1.40,120,100.000,159,0,0

@@ -1,2 +1,0 @@
-rep,load_factor,baseline_hc_miss_rate,mixed_hc_miss_rate,partitioned_hc_miss_rate,delta_partition_minus_mixed,mixed_os_apply,partitioned_os_apply,mixed_ts,partitioned_ts
-1,0.60,99.167,100.000,100.000,0.000,0,1,20260225_225137,20260225_225143

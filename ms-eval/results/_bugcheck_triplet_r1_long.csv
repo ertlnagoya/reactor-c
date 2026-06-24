@@ -1,2 +1,0 @@
-rep,policy1_ts,policy_os_ts,policy2_ts,baseline_policy1,baseline_policy_os,baseline_policy2,policy1,policy_os,policy2,policy_avg,delta_raw,policy1_minus_base,policy2_minus_base,policy_os_minus_base,delta_norm,policy_os_os_apply
-1,20260226_132020,20260226_132025,20260226_132025,0.0,0.25,0.25,0.0,0.0,0.0,0.0,0.0,0.0,-0.25,-0.25,-0.125,0
