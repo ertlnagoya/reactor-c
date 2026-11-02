@@ -122,7 +122,16 @@ bool ms_should_skip_reaction(
     int env_id,
     int worker_id,
     uint64_t reaction_index,
-    long long logical_time_ns
+    long long logical_time_ns,
+    uint32_t microstep
+);
+
+// Orchestrator link: a deadline or STP violation replaced the body of a reaction.
+void ms_on_reaction_violation(
+    int env_id,
+    uint64_t reaction_index,
+    long long logical_time_ns,
+    uint32_t microstep
 );
 
 // Phase 4: Report metrics for OS-level policy decisions.

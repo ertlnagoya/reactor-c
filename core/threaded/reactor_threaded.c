@@ -1119,7 +1119,15 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
           env->id,
           worker_number,
           _ms_reaction_stable_key(current_reaction_to_execute),
-          (long long)env->current_tag.time
+          (long long)env->current_tag.time,
+          (uint32_t)env->current_tag.microstep
+      );
+    } else {
+      ms_on_reaction_violation(
+          env->id,
+          _ms_reaction_stable_key(current_reaction_to_execute),
+          (long long)env->current_tag.time,
+          (uint32_t)env->current_tag.microstep
       );
     }
 

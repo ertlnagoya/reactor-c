@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -170,10 +172,436 @@ static bool _ms_degrade_debug = false;
 static int64_t _ms_env_lc_window_start_ns[MS_MAX_ENVS] = {0};
 static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 
+// Orchestrator link. All of this is opt-in via environment variables; when they
+// are unset no thread is created and no file is opened.
+//  - LF_MS_CTRL_FIFO: FIFO of "set_budget <seq> <b>" commands (b >= 0) from the
+//    orchestrator. A command is applied at the first decision of the next logical
+//    time, so the budget never changes within a logical time.
+//  - LF_MS_DECISION_LOG: record of a run, one record per line:
+//      D,<env>,<elapsed_ns>,<microstep>,<reaction>   shed reaction
+//      X,<env>,<elapsed_ns>,<microstep>,<reaction>   deadline or STP violation
+//      C,<seq>,<b>,<recv_mono_ns>                    command received
+//      R,<recv_mono_ns>                              command rejected
+//      M,<seq>,<b>,<elapsed_ns>,<microstep>,<recv_mono_ns>,<apply_mono_ns>   applied
+//    A command received before the previous one was applied replaces it: the
+//    replaced one has a C record and no M record.
+//      E,<count of D>,<count of X>,<seq of a command never applied, or -1>
+//    A record without the final E line is incomplete and replay refuses it.
+//  - LF_MS_REPLAY_D: shed exactly the D records, ignoring pressure and budget. A
+//    violation cannot be reproduced, only detected: the summary has ok=0 when the
+//    violations or the sheds of the replay differ from the record.
+//  - LF_MS_SUMMARY_FIFO: FIFO that receives one line per period (non-blocking, a
+//    line that does not fit is dropped and counted). The thread only reads the
+//    counters, so the summary cannot change a decision of this run:
+//      summary <seq> <emit_mono_ns> <commanded budget> <shed_total> <kept_total> <samples>
+//              <samples_over> <lag_max_ns> <violations_total> <applied_cmd_seq> <dropped_total>
+//    samples, samples_over and lag_max_ns cover the period; samples_over counts the
+//    lag samples at or above LF_MS_SUMMARY_LAG_NS (default 5 ms). The period is
+//    LF_MS_SUMMARY_PERIOD_MS (default 1000). Two fields follow at the end of the line:
+//    <guard_tags> <tags>, the logical times of the period with the guard on, and all.
+//  - LF_MS_GUARD_LAG_NS, LF_MS_GUARD_RELEASE_NS, LF_MS_GUARD_BUDGET: tag-scale guard.
+//    At the first decision of a logical time, the guard turns on when the latest lag
+//    sample is at or above GUARD_LAG_NS and off when it is below GUARD_RELEASE_NS.
+//    While on, the budget of that logical time is min(commanded budget, GUARD_BUDGET).
+//    The orchestrator's budget is thus an upper bound. RELEASE_NS must be > 0, and
+//    LF_MS_REPORT_EVERY > 1 is refused because it thins the lag samples the guard
+//    and the summary read. Each change is recorded:
+//      G,<elapsed_ns>,<microstep>,<1 on or 0 off>,<lag_ns>
+//    Replay sheds by D only and ignores G.
+// Times are relative to the start time, so they compare across runs. The link
+// supports one environment of the threaded runtime and refuses anything else.
+typedef struct {
+  int env_id;
+  int64_t elapsed_ns;
+  uint32_t microstep;
+  uint64_t reaction_index;
+  bool seen;
+} ms_tag_key_t;
+
+typedef struct {
+  ms_tag_key_t* keys;
+  size_t count;
+  size_t seen;
+  size_t unexpected;
+} ms_replay_set_t;
+
+static bool _ms_link_active = false;
+static bool _ms_link_failed = false;
+static bool _ms_ctrl_active = false;
+static bool _ms_replay_active = false;
+static FILE* _ms_decision_log = NULL;
+static long long _ms_decision_d_count = 0;
+static long long _ms_decision_x_count = 0;
+static bool _ms_ctrl_pending = false;
+static int64_t _ms_ctrl_pending_budget = 0;
+static long long _ms_ctrl_pending_seq = -1;
+static int64_t _ms_ctrl_pending_recv_ns = 0;
+static ms_replay_set_t _ms_replay_d = {NULL, 0, 0, 0};
+static ms_replay_set_t _ms_replay_x = {NULL, 0, 0, 0};
+static bool _ms_guard_active = false;
+static int64_t _ms_guard_on_ns = 0;
+static int64_t _ms_guard_off_ns = 0;
+static int64_t _ms_guard_budget = 0;
+static bool _ms_guard_on = false;
+static int64_t _ms_guard_last_lag_ns = 0;
+static int64_t _ms_tag_last_logical_ns = 0;
+static bool _ms_tag_seen_logical = false;
+static long long _ms_sum_guard_tags = 0;
+static long long _ms_sum_tags = 0;
+static bool _ms_sum_active = false;
+static int _ms_sum_fd = -1;
+static long _ms_sum_period_ms = 1000;
+static int64_t _ms_sum_lag_ns = 5000000;
+static long long _ms_sum_shed = 0;
+static long long _ms_sum_kept = 0;
+static long long _ms_sum_samples = 0;
+static long long _ms_sum_over = 0;
+static int64_t _ms_sum_lag_max = 0;
+static long long _ms_sum_x = 0;
+static long long _ms_sum_cmd_seq = -1;
+
+extern int64_t lf_time_start(void);
+
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static int _ms_tag_key_cmp(const void* a, const void* b) {
+  const ms_tag_key_t* x = (const ms_tag_key_t*)a;
+  const ms_tag_key_t* y = (const ms_tag_key_t*)b;
+  if (x->elapsed_ns != y->elapsed_ns) return x->elapsed_ns < y->elapsed_ns ? -1 : 1;
+  if (x->microstep != y->microstep) return x->microstep < y->microstep ? -1 : 1;
+  if (x->reaction_index != y->reaction_index) return x->reaction_index < y->reaction_index ? -1 : 1;
+  if (x->env_id != y->env_id) return x->env_id < y->env_id ? -1 : 1;
+  return 0;
+}
+
+// Must be called without _ms_lock: exit() runs ms_shutdown.
+static void _ms_link_fatal(const char* what, const char* detail) {
+  fprintf(stderr, "master_scheduler: %s: %s\n", what, detail != NULL ? detail : "");
+  _ms_link_failed = true;
+  exit(EXIT_FAILURE);
+}
+
+static bool _ms_env_set(const char* name) {
+  const char* v = getenv(name);
+  return v != NULL && v[0] != '\0';
+}
+
+static bool _ms_link_requested(void) {
+  return _ms_env_set("LF_MS_CTRL_FIFO") || _ms_env_set("LF_MS_DECISION_LOG") || _ms_env_set("LF_MS_REPLAY_D") ||
+         _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_GUARD_LAG_NS") ||
+         _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
+         _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS");
+}
+
+// Caller holds _ms_lock.
+// Runs once per logical time: applies a pending command, then updates the guard.
+static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) {
+  if (_ms_tag_seen_logical && _ms_tag_last_logical_ns == (int64_t)logical_time_ns) return;
+  _ms_tag_seen_logical = true;
+  _ms_tag_last_logical_ns = (int64_t)logical_time_ns;
+  _ms_sum_tags++;
+  if (_ms_guard_active) {
+    const bool on = _ms_guard_on ? _ms_guard_last_lag_ns >= _ms_guard_off_ns : _ms_guard_last_lag_ns >= _ms_guard_on_ns;
+    if (on != _ms_guard_on && _ms_decision_log != NULL) {
+      fprintf(_ms_decision_log, "G,%lld,%u,%d,%lld\n", (long long)((int64_t)logical_time_ns - lf_time_start()),
+              (unsigned)microstep, on ? 1 : 0, (long long)_ms_guard_last_lag_ns);
+    }
+    _ms_guard_on = on;
+    if (on) _ms_sum_guard_tags++;
+  }
+  if (!_ms_ctrl_active || !_ms_ctrl_pending) return;
+  _ms_ctrl_pending = false;
+  _ms_policy.default_budget = _ms_ctrl_pending_budget;
+  _ms_sum_cmd_seq = _ms_ctrl_pending_seq;
+  if (_ms_decision_log != NULL) {
+    fprintf(_ms_decision_log, "M,%lld,%lld,%lld,%u,%lld,%lld\n",
+            _ms_ctrl_pending_seq, (long long)_ms_ctrl_pending_budget,
+            (long long)((int64_t)logical_time_ns - lf_time_start()), (unsigned)microstep,
+            (long long)_ms_ctrl_pending_recv_ns, (long long)_ms_now_mono_ns());
+  }
+}
+
+// Caller holds _ms_lock.
+static void _ms_decision_log_tag_locked(char kind, int env_id, uint64_t reaction_index,
+                                        long long logical_time_ns, uint32_t microstep) {
+  if (_ms_decision_log == NULL) return;
+  fprintf(_ms_decision_log, "%c,%d,%lld,%u,%llu\n", kind, env_id,
+          (long long)((int64_t)logical_time_ns - lf_time_start()), (unsigned)microstep,
+          (unsigned long long)reaction_index);
+  if (kind == 'D') _ms_decision_d_count++;
+  else _ms_decision_x_count++;
+}
+
+// Caller holds _ms_lock. Returns whether the key is in the recorded set.
+static bool _ms_replay_mark_locked(ms_replay_set_t* set, int env_id, uint64_t reaction_index,
+                                   long long logical_time_ns, uint32_t microstep) {
+  ms_tag_key_t key = {env_id, (int64_t)logical_time_ns - lf_time_start(), microstep, reaction_index, false};
+  ms_tag_key_t* hit = NULL;
+  if (set->count > 0) {
+    hit = (ms_tag_key_t*)bsearch(&key, set->keys, set->count, sizeof(ms_tag_key_t), _ms_tag_key_cmp);
+  }
+  if (hit == NULL || hit->seen) {
+    set->unexpected++;
+    return hit != NULL;
+  }
+  hit->seen = true;
+  set->seen++;
+  return true;
+}
+
+static bool _ms_ctrl_parse(const char* line, long long* seq, long long* budget) {
+  static const char prefix[] = "set_budget ";
+  if (strncmp(line, prefix, sizeof(prefix) - 1) != 0) return false;
+  const char* p = line + sizeof(prefix) - 1;
+  char* end = NULL;
+  errno = 0;
+  *seq = strtoll(p, &end, 10);
+  if (end == p || *end != ' ') return false;
+  p = end + 1;
+  *budget = strtoll(p, &end, 10);
+  return end != p && *end == '\0' && errno == 0;
+}
+
+static void* _ms_ctrl_thread(void* arg) {
+  // Raw read(), not stdio: a thread blocked in fgets holds the FILE lock, and
+  // exit() then waits for that lock when it flushes all streams.
+  int fd = (int)(intptr_t)arg;
+  char line[128];
+  size_t len = 0;
+  bool too_long = false;
+  long long last_seq = -1;
+  for (;;) {
+    char c;
+    ssize_t got = read(fd, &c, 1);
+    if (got < 0 && errno == EINTR) continue;
+    if (got <= 0) break;
+    if (c != '\n') {
+      if (len + 1 < sizeof(line)) line[len++] = c;
+      else too_long = true;
+      continue;
+    }
+    line[len] = '\0';
+    len = 0;
+    long long seq = -1;
+    long long budget = -1;
+    const bool valid = !too_long && _ms_ctrl_parse(line, &seq, &budget) && seq > last_seq && budget >= 0;
+    too_long = false;
+    const int64_t recv_ns = _ms_now_mono_ns();
+    pthread_mutex_lock(&_ms_lock);
+    if (valid) {
+      _ms_ctrl_pending_seq = seq;
+      _ms_ctrl_pending_budget = (int64_t)budget;
+      _ms_ctrl_pending_recv_ns = recv_ns;
+      _ms_ctrl_pending = true;
+      if (_ms_decision_log != NULL) {
+        fprintf(_ms_decision_log, "C,%lld,%lld,%lld\n", seq, budget, (long long)recv_ns);
+      }
+    } else if (_ms_decision_log != NULL) {
+      fprintf(_ms_decision_log, "R,%lld\n", (long long)recv_ns);
+    }
+    pthread_mutex_unlock(&_ms_lock);
+    if (valid) last_seq = seq;
+    else fprintf(stderr, "master_scheduler: rejected control command: %s\n", line);
+  }
+  close(fd);
+  return NULL;
+}
+
+static void* _ms_summary_thread(void* arg) {
+  (void)arg;
+  long long seq = 0;
+  long long dropped = 0;
+  const struct timespec period = {_ms_sum_period_ms / 1000, (_ms_sum_period_ms % 1000) * 1000000L};
+  for (;;) {
+    nanosleep(&period, NULL);
+    seq++;
+    pthread_mutex_lock(&_ms_lock);
+    const long long budget = (long long)_ms_policy.default_budget;
+    const long long shed = _ms_sum_shed;
+    const long long kept = _ms_sum_kept;
+    const long long samples = _ms_sum_samples;
+    const long long over = _ms_sum_over;
+    const long long lag_max = (long long)_ms_sum_lag_max;
+    const long long violations = _ms_sum_x;
+    const long long cmd_seq = _ms_sum_cmd_seq;
+    const long long guard_tags = _ms_sum_guard_tags;
+    const long long tags = _ms_sum_tags;
+    _ms_sum_guard_tags = 0;
+    _ms_sum_tags = 0;
+    _ms_sum_samples = 0;
+    _ms_sum_over = 0;
+    _ms_sum_lag_max = 0;
+    pthread_mutex_unlock(&_ms_lock);
+    char line[256];
+    const int len = snprintf(line, sizeof(line), "summary %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n",
+                             seq, (long long)_ms_now_mono_ns(), budget, shed, kept, samples, over, lag_max,
+                             violations, cmd_seq, dropped, guard_tags, tags);
+    if (write(_ms_sum_fd, line, (size_t)len) != len) dropped++;
+  }
+  return NULL;
+}
+
+static void _ms_replay_append(ms_replay_set_t* set, size_t* cap, const ms_tag_key_t* key) {
+  if (set->count == *cap) {
+    *cap = (*cap == 0) ? 1024 : *cap * 2;
+    set->keys = (ms_tag_key_t*)realloc(set->keys, *cap * sizeof(ms_tag_key_t));
+    if (set->keys == NULL) _ms_link_fatal("out of memory reading LF_MS_REPLAY_D", NULL);
+  }
+  set->keys[set->count++] = *key;
+}
+
+static void _ms_replay_finish(ms_replay_set_t* set) {
+  if (set->count == 0) return;
+  qsort(set->keys, set->count, sizeof(ms_tag_key_t), _ms_tag_key_cmp);
+  for (size_t i = 1; i < set->count; i++) {
+    if (_ms_tag_key_cmp(&set->keys[i - 1], &set->keys[i]) == 0) {
+      _ms_link_fatal("duplicate record in LF_MS_REPLAY_D", NULL);
+    }
+  }
+}
+
+static void _ms_load_replay(const char* path) {
+  FILE* in = fopen(path, "r");
+  if (in == NULL) _ms_link_fatal("cannot open LF_MS_REPLAY_D", path);
+  size_t cap_d = 0;
+  size_t cap_x = 0;
+  bool complete = false;
+  long long want_d = -1;
+  long long want_x = -1;
+  char line[128];
+  while (fgets(line, sizeof(line), in) != NULL) {
+    if (line[0] == 'C' || line[0] == 'M' || line[0] == 'R' || line[0] == 'G') continue;
+    if (line[0] == 'E') {
+      long long pending;
+      if (sscanf(line, "E,%lld,%lld,%lld", &want_d, &want_x, &pending) != 3) {
+        _ms_link_fatal("malformed end record in LF_MS_REPLAY_D", line);
+      }
+      complete = true;
+      continue;
+    }
+    char kind;
+    int env_id;
+    long long elapsed;
+    unsigned micro;
+    unsigned long long rid;
+    if (sscanf(line, "%c,%d,%lld,%u,%llu", &kind, &env_id, &elapsed, &micro, &rid) != 5 ||
+        (kind != 'D' && kind != 'X')) {
+      _ms_link_fatal("malformed record in LF_MS_REPLAY_D", line);
+    }
+    ms_tag_key_t key = {env_id, (int64_t)elapsed, (uint32_t)micro, (uint64_t)rid, false};
+    if (kind == 'D') _ms_replay_append(&_ms_replay_d, &cap_d, &key);
+    else _ms_replay_append(&_ms_replay_x, &cap_x, &key);
+  }
+  fclose(in);
+  if (!complete || want_d != (long long)_ms_replay_d.count || want_x != (long long)_ms_replay_x.count) {
+    _ms_link_fatal("incomplete record in LF_MS_REPLAY_D", path);
+  }
+  _ms_replay_finish(&_ms_replay_d);
+  _ms_replay_finish(&_ms_replay_x);
+  _ms_replay_active = true;
+}
+
+static void _ms_link_init(void) {
+  if (!_ms_link_requested()) return;
+  _ms_link_active = true;
+  const char* decision_path = getenv("LF_MS_DECISION_LOG");
+  const char* replay_path = getenv("LF_MS_REPLAY_D");
+  const char* fifo_path = getenv("LF_MS_CTRL_FIFO");
+  if (_ms_env_set("LF_MS_REPLAY_D") && _ms_env_set("LF_MS_CTRL_FIFO")) {
+    _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_CTRL_FIFO cannot be combined", NULL);
+  }
+  if (_ms_env_set("LF_MS_REPLAY_D") && _ms_env_set("LF_MS_DECISION_LOG") &&
+      strcmp(replay_path, decision_path) == 0) {
+    _ms_link_fatal("LF_MS_DECISION_LOG would overwrite LF_MS_REPLAY_D", replay_path);
+  }
+  // Load before opening the record, so a refused replay leaves no record behind.
+  if (_ms_env_set("LF_MS_REPLAY_D")) _ms_load_replay(replay_path);
+  if (_ms_env_set("LF_MS_DECISION_LOG")) {
+    _ms_decision_log = fopen(decision_path, "w");
+    if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
+    // One flush per run in the usual case: a write under _ms_lock stalls every worker.
+    setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_CTRL_FIFO")) {
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
+      _ms_link_fatal("LF_MS_CTRL_FIFO needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
+    }
+    // O_RDWR keeps the FIFO open between writers and does not block here.
+    int fd = open(fifo_path, O_RDWR);
+    pthread_t thread;
+    if (fd < 0 || pthread_create(&thread, NULL, _ms_ctrl_thread, (void*)(intptr_t)fd) != 0) {
+      _ms_link_fatal("control channel unavailable", fifo_path);
+    }
+    pthread_detach(thread);
+    _ms_ctrl_active = true;
+  }
+  if (!_ms_env_set("LF_MS_GUARD_LAG_NS") &&
+      (_ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET"))) {
+    _ms_link_fatal("LF_MS_GUARD_RELEASE_NS and LF_MS_GUARD_BUDGET need LF_MS_GUARD_LAG_NS", NULL);
+  }
+  if (!_ms_env_set("LF_MS_SUMMARY_FIFO") &&
+      (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS"))) {
+    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS and LF_MS_SUMMARY_LAG_NS need LF_MS_SUMMARY_FIFO", NULL);
+  }
+  if ((_ms_env_set("LF_MS_GUARD_LAG_NS") || _ms_env_set("LF_MS_SUMMARY_FIFO")) &&
+      _ms_env_set("LF_MS_REPORT_EVERY") && atoi(getenv("LF_MS_REPORT_EVERY")) > 1) {
+    _ms_link_fatal("LF_MS_REPORT_EVERY > 1 thins the lag samples of the guard and the summary", NULL);
+  }
+  if (_ms_env_set("LF_MS_GUARD_LAG_NS")) {
+    if (_ms_env_set("LF_MS_REPLAY_D")) {
+      _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_GUARD_LAG_NS cannot be combined", NULL);
+    }
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP || _ms_policy.default_budget < 0) {
+      _ms_link_fatal("LF_MS_GUARD_LAG_NS needs LF_MS_DEGRADE_ENABLE, degrade_action=skip and default_budget >= 0", NULL);
+    }
+    const char* names[3] = {"LF_MS_GUARD_LAG_NS", "LF_MS_GUARD_RELEASE_NS", "LF_MS_GUARD_BUDGET"};
+    int64_t* values[3] = {&_ms_guard_on_ns, &_ms_guard_off_ns, &_ms_guard_budget};
+    for (int i = 0; i < 3; i++) {
+      const char* v = getenv(names[i]);
+      char* end = NULL;
+      if (v == NULL || v[0] == '\0') _ms_link_fatal("the guard needs all three variables", names[i]);
+      *values[i] = (int64_t)strtoll(v, &end, 10);
+      if (*end != '\0' || *values[i] < 0) _ms_link_fatal("invalid guard setting", names[i]);
+    }
+    if (_ms_guard_off_ns == 0) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS must be > 0", NULL);
+    if (_ms_guard_off_ns > _ms_guard_on_ns) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS exceeds LF_MS_GUARD_LAG_NS", NULL);
+    _ms_guard_active = true;
+  }
+  if (_ms_env_set("LF_MS_SUMMARY_FIFO")) {
+    if (_ms_env_set("LF_MS_REPLAY_D")) {
+      _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_SUMMARY_FIFO cannot be combined", NULL);
+    }
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
+      _ms_link_fatal("LF_MS_SUMMARY_FIFO needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
+    }
+    if (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS")) {
+      char* end = NULL;
+      _ms_sum_period_ms = strtol(getenv("LF_MS_SUMMARY_PERIOD_MS"), &end, 10);
+      if (*end != '\0' || _ms_sum_period_ms <= 0) {
+        _ms_link_fatal("invalid LF_MS_SUMMARY_PERIOD_MS", getenv("LF_MS_SUMMARY_PERIOD_MS"));
+      }
+    }
+    if (_ms_env_set("LF_MS_SUMMARY_LAG_NS")) {
+      char* end = NULL;
+      _ms_sum_lag_ns = (int64_t)strtoll(getenv("LF_MS_SUMMARY_LAG_NS"), &end, 10);
+      if (*end != '\0' || _ms_sum_lag_ns < 0) {
+        _ms_link_fatal("invalid LF_MS_SUMMARY_LAG_NS", getenv("LF_MS_SUMMARY_LAG_NS"));
+      }
+    }
+    const char* summary_path = getenv("LF_MS_SUMMARY_FIFO");
+    // O_RDWR: opening does not wait for a reader and a write never raises SIGPIPE.
+    _ms_sum_fd = open(summary_path, O_RDWR | O_NONBLOCK);
+    pthread_t thread;
+    if (_ms_sum_fd < 0 || pthread_create(&thread, NULL, _ms_summary_thread, NULL) != 0) {
+      _ms_link_fatal("summary channel unavailable", summary_path);
+    }
+    pthread_detach(thread);
+    _ms_sum_active = true;
+  }
 }
 
 static const char* _ms_criticality_str(ms_criticality_t crit) {
@@ -625,8 +1053,12 @@ bool ms_init(const char* config_path) {
   }
   pthread_mutex_unlock(&_ms_lock);
 
+#if defined(LF_SINGLE_THREADED)
+  if (_ms_link_requested()) _ms_link_fatal("the orchestrator link needs the threaded runtime", NULL);
+#endif
   // Allow hard disable via env var for near-zero overhead.
   if (_ms_is_true(getenv("LF_MS_DISABLE"))) {
+    if (_ms_link_requested()) _ms_link_fatal("the orchestrator link cannot run with LF_MS_DISABLE", NULL);
     pthread_mutex_lock(&_ms_lock);
     _ms_enabled = false;
     pthread_mutex_unlock(&_ms_lock);
@@ -661,6 +1093,7 @@ bool ms_init(const char* config_path) {
     // Non-fatal: disable to avoid affecting runtime behavior.
     _ms_enabled = false;
     pthread_mutex_unlock(&_ms_lock);
+    if (_ms_link_requested()) _ms_link_fatal("the orchestrator link needs LF_MS_LOG", path);
     return true;
   }
 
@@ -680,6 +1113,7 @@ bool ms_init(const char* config_path) {
   }
   _ms_load_config(cfg_path);
   _ms_os_load_env();
+  _ms_link_init();
 
   return true;
 }
@@ -693,6 +1127,22 @@ void ms_shutdown(void) {
     return;
   }
   _ms_shutdown_called = true;
+
+  if (_ms_replay_active && !_ms_link_failed) {
+    const bool ok = _ms_replay_d.seen == _ms_replay_d.count && _ms_replay_d.unexpected == 0 &&
+                    _ms_replay_x.seen == _ms_replay_x.count && _ms_replay_x.unexpected == 0;
+    fprintf(stderr, "event=replay_summary ok=%d d_seen=%zu d_total=%zu d_unexpected=%zu x_seen=%zu x_total=%zu x_unexpected=%zu\n",
+            ok ? 1 : 0, _ms_replay_d.seen, _ms_replay_d.count, _ms_replay_d.unexpected,
+            _ms_replay_x.seen, _ms_replay_x.count, _ms_replay_x.unexpected);
+  }
+  if (_ms_decision_log != NULL) {
+    if (!_ms_link_failed) {
+      fprintf(_ms_decision_log, "E,%lld,%lld,%lld\n", _ms_decision_d_count, _ms_decision_x_count,
+              _ms_ctrl_pending ? _ms_ctrl_pending_seq : -1LL);
+    }
+    fclose(_ms_decision_log);
+    _ms_decision_log = NULL;
+  }
 
   if (_ms_log != NULL) {
     fprintf(_ms_log, "# phase3 master_scheduler shutdown pid=%d\n", (int)getpid());
@@ -1081,14 +1531,57 @@ void ms_on_reaction_end(
     }
 }
 
+void ms_on_reaction_violation(
+    int env_id,
+    uint64_t reaction_index,
+    long long logical_time_ns,
+    uint32_t microstep
+) {
+  if (!_ms_enabled || !_ms_link_active) return;
+  pthread_mutex_lock(&_ms_lock);
+  if (_ms_replay_active) {
+    _ms_replay_mark_locked(&_ms_replay_x, env_id, reaction_index, logical_time_ns, microstep);
+  }
+  _ms_sum_x++;
+  _ms_decision_log_tag_locked('X', env_id, reaction_index, logical_time_ns, microstep);
+  pthread_mutex_unlock(&_ms_lock);
+}
+
 bool ms_should_skip_reaction(
     int env_id,
     int worker_id,
     uint64_t reaction_index,
-    long long logical_time_ns
+    long long logical_time_ns,
+    uint32_t microstep
 ) {
   (void)worker_id;
-  if (!_ms_enabled || !_ms_degrade_enabled) return false;
+  if (!_ms_enabled) return false;
+  if (_ms_link_active && env_id != 0) {
+    _ms_link_fatal("the orchestrator link supports one environment", NULL);
+  }
+  if (_ms_replay_active) {
+    pthread_mutex_lock(&_ms_lock);
+    const bool hit = _ms_replay_mark_locked(&_ms_replay_d, env_id, reaction_index, logical_time_ns, microstep);
+    if (hit) {
+      ms_ready_set_t* replay_set = _ms_get_ready_set(env_id);
+      if (replay_set != NULL) {
+        int idx = _ms_ready_find(replay_set, reaction_index);
+        if (idx >= 0) _ms_ready_remove_at(replay_set, idx);
+      }
+      _ms_decision_log_tag_locked('D', env_id, reaction_index, logical_time_ns, microstep);
+    } else {
+      // A reaction outside D is not an error of the record by itself: undo the count.
+      _ms_replay_d.unexpected--;
+    }
+    pthread_mutex_unlock(&_ms_lock);
+    return hit;
+  }
+  if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active) {
+    pthread_mutex_lock(&_ms_lock);
+    _ms_tag_begin_locked(logical_time_ns, microstep);
+    pthread_mutex_unlock(&_ms_lock);
+  }
+  if (!_ms_degrade_enabled) return false;
   if (_ms_policy.degrade_action != MS_DEGRADE_SKIP) return false;
 
   int should_skip = 0;
@@ -1165,14 +1658,17 @@ bool ms_should_skip_reaction(
     // worker counts where LC ran in parallel within one window). When
     // default_budget < 0 we fall back to all-or-nothing shedding under pressure.
     int allow_within_budget = 0;
-    if (_ms_policy.default_budget >= 0 && env_id >= 0 && env_id < MS_MAX_ENVS) {
+    int64_t budget = _ms_policy.default_budget;
+    if (_ms_guard_on && _ms_guard_budget < budget) budget = _ms_guard_budget;
+    if (budget >= 0 && env_id >= 0 && env_id < MS_MAX_ENVS) {
       if (_ms_env_lc_window_start_ns[env_id] != (int64_t)logical_time_ns) {
         _ms_env_lc_window_start_ns[env_id] = (int64_t)logical_time_ns;
         _ms_env_lc_used_in_window[env_id] = 0;
       }
-      if (_ms_env_lc_used_in_window[env_id] < _ms_policy.default_budget) {
+      if (_ms_env_lc_used_in_window[env_id] < budget) {
         _ms_env_lc_used_in_window[env_id]++;
         allow_within_budget = 1;
+        _ms_sum_kept++;
       }
     }
     if (!allow_within_budget) {
@@ -1181,6 +1677,8 @@ bool ms_should_skip_reaction(
         _ms_ready_remove_at(set, idx);
       }
       should_skip = 1;
+      _ms_sum_shed++;
+      _ms_decision_log_tag_locked('D', env_id, reaction_index, logical_time_ns, microstep);
     }
   }
   pthread_mutex_unlock(&_ms_lock);
@@ -1233,6 +1731,12 @@ void ms_on_metrics(
   };
 
   pthread_mutex_lock(&_ms_lock);
+  _ms_guard_last_lag_ns = lag_ns;
+  if (_ms_sum_active) {
+    _ms_sum_samples++;
+    if (lag_ns >= _ms_sum_lag_ns) _ms_sum_over++;
+    if (lag_ns > _ms_sum_lag_max) _ms_sum_lag_max = lag_ns;
+  }
   int ready_len = ready_q_len;
   if (ready_len < 0) {
     ms_ready_set_t* ready_set = _ms_get_ready_set(env_id);
