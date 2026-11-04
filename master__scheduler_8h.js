@@ -15,6 +15,7 @@ var master__scheduler_8h =
       [ "MS_SCHED_FIFO", "master__scheduler_8h.html#ad53fdf2837b2ec313bf0c985a0d1b434a24e637e781bd128dc970c44bdd9712fc", null ],
       [ "MS_SCHED_RR", "master__scheduler_8h.html#ad53fdf2837b2ec313bf0c985a0d1b434a382428bd4ff8e95cff41b08e6aebaaf2", null ]
     ] ],
+    [ "ms_check_reaction_key", "master__scheduler_8h.html#a647c0c9f91cd261bed92200bff68b2b3", null ],
     [ "ms_gettid", "master__scheduler_8h.html#a482606b79cedb0203d1574ac91ffae06", null ],
     [ "ms_init", "master__scheduler_8h.html#a7404d6b7c139c5fbab94aa5197add2f6", null ],
     [ "ms_log_os_policy_apply", "master__scheduler_8h.html#a2a2d6767e81f644985204e3699ec84d7", null ],
@@ -24,12 +25,14 @@ var master__scheduler_8h =
     [ "ms_on_reaction_end", "master__scheduler_8h.html#a4c0974995edbe3784531c06346e54a75", null ],
     [ "ms_on_reaction_ready", "master__scheduler_8h.html#aba07bf7a546666765733e4a795ce194d", null ],
     [ "ms_on_reaction_start", "master__scheduler_8h.html#af0a666d40878c1bb01012208c0f72e6c", null ],
+    [ "ms_on_reaction_violation", "master__scheduler_8h.html#a7542c7b32235dd00d4b050961f6ecda8", null ],
     [ "ms_pick_next", "master__scheduler_8h.html#a949041dc8b9408052df830daa449e305", null ],
     [ "ms_register_worker", "master__scheduler_8h.html#a5da2b07673286ce106e35c42bc00b76b", null ],
     [ "ms_report", "master__scheduler_8h.html#acaf46a0c3e765eab652830a306b6df75", null ],
     [ "ms_set_enabled", "master__scheduler_8h.html#a53104a6413569b7a6e2e1535e83d4b4c", null ],
     [ "ms_set_log_level", "master__scheduler_8h.html#a638e2ce75385dea55bc447164891a15a", null ],
-    [ "ms_should_skip_reaction", "master__scheduler_8h.html#a5fc22756c92552813555bee213bf9974", null ],
+    [ "ms_should_skip_reaction", "master__scheduler_8h.html#a86a7fec4a2dad78e4fb0933d143aad94", null ],
     [ "ms_shutdown", "master__scheduler_8h.html#a672405d925ec42ad32f158a0ab4a5809", null ],
+    [ "ms_shutdown_at_exit", "master__scheduler_8h.html#a4a8b9c62da3918605053b506e2ef5335", null ],
     [ "ms_take_os_policy", "master__scheduler_8h.html#aae9872a1e8a6364bef82b36833ec212d", null ]
 ];
