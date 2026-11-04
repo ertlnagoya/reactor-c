@@ -197,13 +197,22 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //      summary <seq> <emit_mono_ns> <commanded budget> <shed_total> <kept_total> <samples>
 //              <samples_over> <lag_max_ns> <violations_total> <applied_cmd_seq> <dropped_total>
 //    samples, samples_over and lag_max_ns cover the period; samples_over counts the
-//    lag samples at or above LF_MS_SUMMARY_LAG_NS (default 5 ms). The period is
+//    lag samples at or above LF_MS_SUMMARY_LAG_NS (default 5 ms). A lag sample is taken at the
+//    start of every reaction (HC and LC), so samples_over is not the HC miss rate of a program
+//    that measures its own HC lag at another point. kept_total counts the LC reactions kept by
+//    the budget while shedding applies; LC reactions that run with no shedding are not counted,
+//    so kept_total / (kept_total + shed_total) is not the LC completion rate. The period is
 //    LF_MS_SUMMARY_PERIOD_MS (default 1000). Two fields follow at the end of the line:
 //    <guard_tags> <tags>, the logical times of the period with the guard on, and all.
 //  - LF_MS_GUARD_LAG_NS, LF_MS_GUARD_RELEASE_NS, LF_MS_GUARD_BUDGET: tag-scale guard.
 //    At the first decision of a logical time, the guard turns on when the latest lag
 //    sample is at or above GUARD_LAG_NS and off when it is below GUARD_RELEASE_NS.
-//    While on, the budget of that logical time is min(commanded budget, GUARD_BUDGET).
+//    While on, the budget of that logical time is min(commanded budget, GUARD_BUDGET). The budget
+//    acts only under degrade pressure, so GUARD_LAG_NS below LF_MS_DEGRADE_LAG_NS (or no lag
+//    threshold at all) would turn the guard on without any effect; such a setting is refused.
+//  - LF_MS_BUDGET_CAP=1: the budget b caps the LC reactions of every logical time, with or
+//    without degrade pressure (default: only under pressure). Needs LF_MS_DEGRADE_ENABLE,
+//    degrade_action=skip and default_budget >= 0.
 //    The orchestrator's budget is thus an upper bound. RELEASE_NS must be > 0, and
 //    LF_MS_REPORT_EVERY > 1 is refused because it thins the lag samples the guard
 //    and the summary read. Each change is recorded:
@@ -256,6 +265,7 @@ static void _ms_rec(const char* fmt, ...) {
   int n = vsnprintf(line, sizeof(line), fmt, ap);
   va_end(ap);
   if (n < 0) return;
+  if ((size_t)n >= sizeof(line)) line[sizeof(line) - 2] = '\n';  // truncated: keep one record per line
   if (_ms_decision_log != NULL) fputs(line, _ms_decision_log);
   if (_ms_record_sink != NULL) {
     size_t len = strlen(line);
@@ -277,6 +287,7 @@ static int64_t _ms_guard_off_ns = 0;
 static int64_t _ms_guard_budget = 0;
 static bool _ms_guard_on = false;
 static bool _ms_lc_lag_active = false;
+static bool _ms_budget_cap = false;
 static bool _ms_lag_mono = false;
 static int64_t _ms_lag_anchor_real = 0;
 static int64_t _ms_lag_anchor_mono = -1;
@@ -347,7 +358,8 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_GUARD_LAG_NS") ||
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
-         _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK");
+         _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
+         _ms_env_set("LF_MS_BUDGET_CAP");
 }
 
 // Caller holds _ms_lock.
@@ -525,8 +537,9 @@ static void _ms_load_replay(const char* path) {
   bool complete = false;
   long long want_d = -1;
   long long want_x = -1;
-  char line[128];
+  char line[256];
   while (fgets(line, sizeof(line), in) != NULL) {
+    if (line[0] == '\n' || line[0] == '\r' || line[0] == '\0') continue;  // e.g. a record taken from a log
     if (line[0] == 'C' || line[0] == 'M' || line[0] == 'R' || line[0] == 'G') continue;
     if (line[0] == 'E') {
       long long pending;
@@ -578,6 +591,13 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_BUDGET_CAP")) {
+    if (_ms_env_set("LF_MS_REPLAY_D")) _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_BUDGET_CAP cannot be combined", NULL);
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP || _ms_policy.default_budget < 0) {
+      _ms_link_fatal("LF_MS_BUDGET_CAP needs LF_MS_DEGRADE_ENABLE, degrade_action=skip and default_budget >= 0", NULL);
+    }
+    _ms_budget_cap = strcmp(getenv("LF_MS_BUDGET_CAP"), "1") == 0;
   }
   if (_ms_env_set("LF_MS_LAG_CLOCK")) {
     if (strcmp(getenv("LF_MS_LAG_CLOCK"), "monotonic") == 0) {
@@ -636,6 +656,10 @@ static void _ms_link_init(void) {
     }
     if (_ms_guard_off_ns == 0) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS must be > 0", NULL);
     if (_ms_guard_off_ns > _ms_guard_on_ns) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS exceeds LF_MS_GUARD_LAG_NS", NULL);
+    // The guard's budget acts only under degrade pressure: the lag threshold must exist and not exceed it
+    if (!_ms_budget_cap && (_ms_degrade_lag_threshold_ns < 0 || _ms_guard_on_ns < _ms_degrade_lag_threshold_ns)) {
+      _ms_link_fatal("LF_MS_GUARD_LAG_NS needs LF_MS_DEGRADE_LAG_NS set and not above it (or LF_MS_BUDGET_CAP=1)", NULL);
+    }
     _ms_guard_active = true;
   }
   if (_ms_env_set("LF_MS_LC_LAG_NS")) {
@@ -1627,6 +1651,9 @@ void ms_on_reaction_violation(
   pthread_mutex_lock(&_ms_lock);
   if (_ms_replay_active) {
     _ms_replay_mark_locked(&_ms_replay_x, env_id, reaction_index, logical_time_ns, microstep);
+  } else if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active) {
+    // A logical time whose first reaction violates its deadline still begins here (pending command, guard)
+    _ms_tag_begin_locked(logical_time_ns, microstep);
   }
   _ms_sum_x++;
   _ms_decision_log_tag_locked('X', env_id, reaction_index, logical_time_ns, microstep);
@@ -1716,9 +1743,10 @@ bool ms_should_skip_reaction(
     }
   }
 
+  // Shedding applies under degrade pressure, or always with LF_MS_BUDGET_CAP=1
   if (set == NULL ||
       env_id < 0 || env_id >= MS_MAX_ENVS ||
-      !_ms_env_degrade_pressure[env_id]) {
+      !(_ms_env_degrade_pressure[env_id] || _ms_budget_cap)) {
     pthread_mutex_unlock(&_ms_lock);
     return false;
   }
