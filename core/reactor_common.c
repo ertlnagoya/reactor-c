@@ -33,6 +33,8 @@
 #include "hashset/hashset_itr.h"
 #include "environment.h"
 #include "reactor_common.h"
+#include "master_scheduler.h"
+#include "ms_reaction_key.h"
 
 #if !defined(LF_SINGLE_THREADED)
 #include "watchdog.h"
@@ -912,15 +914,35 @@ void schedule_output_reactions(environment_t* env, reaction_t* reaction, int wor
       }
     }
 #endif
+    // With the orchestrator link, the master scheduler names this reaction as at a worker dispatch
+    // (key check, X records, replay). Without it, nothing is computed here.
+    const bool ms_link = ms_link_is_active();
+    const uint64_t ms_key = ms_link ? _ms_reaction_stable_key(downstream_to_execute_now) : 0;
+    if (ms_link) {
+      ms_check_reaction_key(ms_key, downstream_to_execute_now,
+                            downstream_to_execute_now->self != NULL
+                                ? lf_reactor_full_name((self_base_t*)downstream_to_execute_now->self)
+                                : downstream_to_execute_now->name,
+                            downstream_to_execute_now->number);
+    }
     if (downstream_to_execute_now->deadline >= 0LL) {
+      // A replay of the MS record may force the decision (forced >= 0).
+      const int forced = ms_link ? ms_replay_deadline_decision(env->id, ms_key, (long long)env->current_tag.time,
+                                                               (uint32_t)env->current_tag.microstep)
+                                 : -1;
       // Get the current physical time.
       instant_t physical_time = lf_time_physical();
       // Check for deadline violation.
-      if (downstream_to_execute_now->deadline == 0 ||
-          physical_time > lf_time_add(env->current_tag.time, downstream_to_execute_now->deadline)) {
+      if (forced >= 0 ? forced == 1
+                      : (downstream_to_execute_now->deadline == 0 ||
+                         physical_time > lf_time_add(env->current_tag.time, downstream_to_execute_now->deadline))) {
         // Deadline violation has occurred.
         tracepoint_reaction_deadline_missed(env, downstream_to_execute_now, worker);
         violation = true;
+        if (ms_link) {
+          ms_on_reaction_violation(env->id, ms_key, (long long)env->current_tag.time,
+                                   (uint32_t)env->current_tag.microstep);
+        }
         // Invoke the local handler, if there is one.
         reaction_function_t handler = downstream_to_execute_now->deadline_violation_handler;
         tracepoint_reaction_starts(env, downstream_to_execute_now, worker);

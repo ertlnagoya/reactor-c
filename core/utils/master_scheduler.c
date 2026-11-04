@@ -178,6 +178,12 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //  - LF_MS_CTRL_FIFO: FIFO of "set_budget <seq> <b>" commands (b >= 0) from the
 //    orchestrator. A command is applied at the first decision of the next logical
 //    time, so the budget never changes within a logical time.
+//  - LF_MS_CTRL_SOURCE=<symbol> (A4b): an in-process command source instead of the FIFO. The MS
+//    finds int <symbol>(void (*submit)(long long seq, long long budget)) with dlsym and calls it once
+//    at start-up; each submit(seq, b) is handled as the FIFO line "set_budget <seq> <b>". The source
+//    returns 0 when it started (e.g. a thread that receives the commands over LoLa).
+//  - LF_MS_SUMMARY_SINK=<symbol> (A4b): each summary line (below) goes to void <symbol>(const char*),
+//    without its newline, instead of to LF_MS_SUMMARY_FIFO. No line reaches it after ms_shutdown.
 //  - LF_MS_DECISION_LOG: record of a run, one record per line:
 //      D,<env>,<elapsed_ns>,<microstep>,<reaction>   shed reaction
 //      X,<env>,<elapsed_ns>,<microstep>,<reaction>   deadline or STP violation
@@ -191,6 +197,11 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //  - LF_MS_REPLAY_D: shed exactly the D records, ignoring pressure and budget. A
 //    violation cannot be reproduced, only detected: the summary has ok=0 when the
 //    violations or the sheds of the replay differ from the record.
+//  - LF_MS_REPLAY_X=1 (with LF_MS_REPLAY_D): also reproduce the deadline violations. For a
+//    reaction with a deadline, the runtime takes the violation as given by the X records
+//    (violated iff the reaction and tag are recorded) instead of comparing physical time
+//    with the deadline, and runs the deadline handler or the body accordingly. STP
+//    violations are not forced (federated programs are not supported by the link).
 //  - LF_MS_SUMMARY_FIFO: FIFO that receives one line per period (non-blocking, a
 //    line that does not fit is dropped and counted). The thread only reads the
 //    counters, so the summary cannot change a decision of this run:
@@ -204,6 +215,8 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    so kept_total / (kept_total + shed_total) is not the LC completion rate. The period is
 //    LF_MS_SUMMARY_PERIOD_MS (default 1000). Two fields follow at the end of the line:
 //    <guard_tags> <tags>, the logical times of the period with the guard on, and all.
+//    With LF_MS_SUMMARY_EXT=1 one more field follows: <ext_violations_total>, the violations the
+//    program reported with ms_count_external_violation() (B1b: late accelerator completions).
 //  - LF_MS_GUARD_LAG_NS, LF_MS_GUARD_RELEASE_NS, LF_MS_GUARD_BUDGET: tag-scale guard.
 //    At the first decision of a logical time, the guard turns on when the latest lag
 //    sample is at or above GUARD_LAG_NS and off when it is below GUARD_RELEASE_NS.
@@ -259,6 +272,7 @@ static bool _ms_link_active = false;
 static bool _ms_link_failed = false;
 static bool _ms_ctrl_active = false;
 static bool _ms_replay_active = false;
+static bool _ms_replay_force_x = false;  // LF_MS_REPLAY_X=1
 static FILE* _ms_decision_log = NULL;
 typedef void (*ms_record_sink_t)(const char* line);
 static ms_record_sink_t _ms_record_sink = NULL;
@@ -312,6 +326,14 @@ static long long _ms_sum_guard_tags = 0;
 static long long _ms_sum_tags = 0;
 static bool _ms_sum_active = false;
 static int _ms_sum_fd = -1;
+// A4b: in-process summary sink (LF_MS_SUMMARY_SINK); _ms_sum_sink_lock lets the exit drop it safely
+typedef void (*ms_summary_sink_t)(const char* line);
+static ms_summary_sink_t _ms_sum_sink = NULL;
+static pthread_mutex_t _ms_sum_sink_lock = PTHREAD_MUTEX_INITIALIZER;
+static long long _ms_ctrl_last_seq = -1;
+// B1b: violations reported by the program (e.g. late accelerator completions), appended to the summary
+static long long _ms_sum_ext = 0;   // updated with __atomic builtins: any thread may report
+static bool _ms_sum_ext_on = false;  // LF_MS_SUMMARY_EXT=1
 static long _ms_sum_period_ms = 1000;
 static int64_t _ms_sum_lag_ns = 5000000;
 static long long _ms_sum_shed = 0;
@@ -372,7 +394,8 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
-         _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS");
+         _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS") || _ms_env_set("LF_MS_REPLAY_X") ||
+         _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK") || _ms_env_set("LF_MS_SUMMARY_EXT");
 }
 
 // Caller holds _ms_lock.
@@ -444,6 +467,35 @@ static bool _ms_ctrl_parse(const char* line, long long* seq, long long* budget) 
   return end != p && *end == '\0' && errno == 0;
 }
 
+// One command from the FIFO or the in-process source: accepted (C record, applied at the next logical
+// time) when it parsed, its seq increases and the budget is >= 0; refused (R record) otherwise.
+static bool _ms_ctrl_accept(bool parsed, long long seq, long long budget) {
+  const int64_t recv_ns = _ms_now_mono_ns();
+  pthread_mutex_lock(&_ms_lock);
+  const bool valid = parsed && seq > _ms_ctrl_last_seq && budget >= 0;
+  if (valid) {
+    _ms_ctrl_last_seq = seq;
+    _ms_ctrl_pending_seq = seq;
+    _ms_ctrl_pending_budget = (int64_t)budget;
+    _ms_ctrl_pending_recv_ns = recv_ns;
+    _ms_ctrl_pending = true;
+    if (_ms_decision_log != NULL) {
+      _ms_rec("C,%lld,%lld,%lld\n", seq, budget, (long long)recv_ns);
+    }
+  } else if (_ms_decision_log != NULL) {
+    _ms_rec("R,%lld\n", (long long)recv_ns);
+  }
+  pthread_mutex_unlock(&_ms_lock);
+  return valid;
+}
+
+// A4b: the function handed to the in-process command source (LF_MS_CTRL_SOURCE)
+static void _ms_ctrl_submit(long long seq, long long budget) {
+  if (!_ms_ctrl_accept(true, seq, budget)) {
+    fprintf(stderr, "master_scheduler: rejected control command: set_budget %lld %lld\n", seq, budget);
+  }
+}
+
 static void* _ms_ctrl_thread(void* arg) {
   // Raw read(), not stdio: a thread blocked in fgets holds the FILE lock, and
   // exit() then waits for that lock when it flushes all streams.
@@ -451,7 +503,6 @@ static void* _ms_ctrl_thread(void* arg) {
   char line[128];
   size_t len = 0;
   bool too_long = false;
-  long long last_seq = -1;
   for (;;) {
     char c;
     ssize_t got = read(fd, &c, 1);
@@ -466,24 +517,9 @@ static void* _ms_ctrl_thread(void* arg) {
     len = 0;
     long long seq = -1;
     long long budget = -1;
-    const bool valid = !too_long && _ms_ctrl_parse(line, &seq, &budget) && seq > last_seq && budget >= 0;
+    const bool parsed = !too_long && _ms_ctrl_parse(line, &seq, &budget);
     too_long = false;
-    const int64_t recv_ns = _ms_now_mono_ns();
-    pthread_mutex_lock(&_ms_lock);
-    if (valid) {
-      _ms_ctrl_pending_seq = seq;
-      _ms_ctrl_pending_budget = (int64_t)budget;
-      _ms_ctrl_pending_recv_ns = recv_ns;
-      _ms_ctrl_pending = true;
-      if (_ms_decision_log != NULL) {
-        _ms_rec("C,%lld,%lld,%lld\n", seq, budget, (long long)recv_ns);
-      }
-    } else if (_ms_decision_log != NULL) {
-      _ms_rec("R,%lld\n", (long long)recv_ns);
-    }
-    pthread_mutex_unlock(&_ms_lock);
-    if (valid) last_seq = seq;
-    else fprintf(stderr, "master_scheduler: rejected control command: %s\n", line);
+    if (!_ms_ctrl_accept(parsed, seq, budget)) fprintf(stderr, "master_scheduler: rejected control command: %s\n", line);
   }
   close(fd);
   return NULL;
@@ -518,7 +554,25 @@ static void* _ms_summary_thread(void* arg) {
     const int len = snprintf(line, sizeof(line), "summary %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n",
                              seq, (long long)_ms_now_mono_ns(), budget, shed, kept, samples, over, lag_max,
                              violations, cmd_seq, dropped, guard_tags, tags);
-    if (write(_ms_sum_fd, line, (size_t)len) != len) dropped++;
+    int n = len;
+    if (_ms_sum_ext_on && n > 0 && n < (int)sizeof(line)) {
+      // B1b: one more field, the total of the violations the program reported (LF_MS_SUMMARY_EXT=1)
+      n += snprintf(line + n - 1, sizeof(line) - (size_t)(n - 1), " %lld\n",
+                    __atomic_load_n(&_ms_sum_ext, __ATOMIC_RELAXED)) - 1;
+    }
+    if (n <= 0) continue;
+    if (n >= (int)sizeof(line)) {  // truncated: snprintf returns the untruncated length; keep a full line
+      n = (int)sizeof(line) - 1;
+      line[n - 1] = '\n';
+    }
+    if (_ms_sum_fd >= 0) {
+      if (write(_ms_sum_fd, line, (size_t)n) != n) dropped++;
+    } else {
+      line[n > 0 ? n - 1 : 0] = '\0';  // the sink takes the line without its newline
+      pthread_mutex_lock(&_ms_sum_sink_lock);
+      if (_ms_sum_sink != NULL) _ms_sum_sink(line);
+      pthread_mutex_unlock(&_ms_sum_sink_lock);
+    }
   }
   return NULL;
 }
@@ -584,6 +638,18 @@ static void _ms_load_replay(const char* path) {
   _ms_replay_active = true;
 }
 
+bool ms_link_is_active(void) { return _ms_enabled && _ms_link_active; }
+
+void ms_count_external_violation(void) { __atomic_fetch_add(&_ms_sum_ext, 1, __ATOMIC_RELAXED); }
+
+int ms_replay_deadline_decision(int env_id, uint64_t reaction_index, long long logical_time_ns, uint32_t microstep) {
+  if (!_ms_replay_force_x) return -1;
+  // The X set is read-only after loading, so no lock is needed for the lookup.
+  ms_tag_key_t key = {env_id, (int64_t)logical_time_ns - lf_time_start(), microstep, reaction_index, false};
+  if (_ms_replay_x.count == 0) return 0;
+  return bsearch(&key, _ms_replay_x.keys, _ms_replay_x.count, sizeof(ms_tag_key_t), _ms_tag_key_cmp) != NULL ? 1 : 0;
+}
+
 static void _ms_link_init(void) {
   if (!_ms_link_requested()) return;
   _ms_link_active = true;
@@ -592,6 +658,12 @@ static void _ms_link_init(void) {
   const char* fifo_path = getenv("LF_MS_CTRL_FIFO");
   if (_ms_env_set("LF_MS_REPLAY_D") && _ms_env_set("LF_MS_CTRL_FIFO")) {
     _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_CTRL_FIFO cannot be combined", NULL);
+  }
+  if (_ms_env_set("LF_MS_CTRL_SOURCE") && (_ms_env_set("LF_MS_CTRL_FIFO") || _ms_env_set("LF_MS_REPLAY_D"))) {
+    _ms_link_fatal("LF_MS_CTRL_SOURCE cannot be combined with LF_MS_CTRL_FIFO or LF_MS_REPLAY_D", NULL);
+  }
+  if (_ms_env_set("LF_MS_SUMMARY_SINK") && _ms_env_set("LF_MS_SUMMARY_FIFO")) {
+    _ms_link_fatal("LF_MS_SUMMARY_SINK and LF_MS_SUMMARY_FIFO cannot be combined", NULL);
   }
   if (_ms_env_set("LF_MS_REPLAY_D") && _ms_env_set("LF_MS_DECISION_LOG") &&
       strcmp(replay_path, decision_path) == 0) {
@@ -604,6 +676,11 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_REPLAY_X")) {
+    if (!_ms_env_set("LF_MS_REPLAY_D")) _ms_link_fatal("LF_MS_REPLAY_X needs LF_MS_REPLAY_D", NULL);
+    if (strcmp(getenv("LF_MS_REPLAY_X"), "1") != 0) _ms_link_fatal("LF_MS_REPLAY_X must be 1", getenv("LF_MS_REPLAY_X"));
+    _ms_replay_force_x = true;
   }
   if (_ms_env_set("LF_MS_KEY_CHECK_TEST_BITS")) {
     const int bits = atoi(getenv("LF_MS_KEY_CHECK_TEST_BITS"));
@@ -644,15 +721,29 @@ static void _ms_link_init(void) {
     pthread_detach(thread);
     _ms_ctrl_active = true;
   }
+  if (_ms_env_set("LF_MS_CTRL_SOURCE")) {
+    // A4b: an in-process command source (e.g. a LoLa subscriber loaded with the program). The MS hands
+    // it a submit function; each call is one "set_budget <seq> <b>" command, handled as from the FIFO.
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
+      _ms_link_fatal("LF_MS_CTRL_SOURCE needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
+    }
+    typedef int (*ms_ctrl_source_t)(void (*submit)(long long seq, long long budget));
+    ms_ctrl_source_t source = NULL;
+    *(void**)(&source) = dlsym(RTLD_DEFAULT, getenv("LF_MS_CTRL_SOURCE"));
+    if (source == NULL) _ms_link_fatal("LF_MS_CTRL_SOURCE symbol not found", getenv("LF_MS_CTRL_SOURCE"));
+    _ms_ctrl_active = true;  // before the source starts, so no command finds the channel inactive
+    if (source(_ms_ctrl_submit) != 0) _ms_link_fatal("LF_MS_CTRL_SOURCE failed to start", getenv("LF_MS_CTRL_SOURCE"));
+  }
   if (!_ms_env_set("LF_MS_GUARD_LAG_NS") &&
       (_ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET"))) {
     _ms_link_fatal("LF_MS_GUARD_RELEASE_NS and LF_MS_GUARD_BUDGET need LF_MS_GUARD_LAG_NS", NULL);
   }
-  if (!_ms_env_set("LF_MS_SUMMARY_FIFO") &&
-      (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS"))) {
-    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS and LF_MS_SUMMARY_LAG_NS need LF_MS_SUMMARY_FIFO", NULL);
+  const bool summary_wanted = _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_SUMMARY_SINK");
+  if (!summary_wanted && (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
+                          _ms_env_set("LF_MS_SUMMARY_EXT"))) {
+    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS, LF_MS_SUMMARY_LAG_NS and LF_MS_SUMMARY_EXT need LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK", NULL);
   }
-  if ((_ms_env_set("LF_MS_GUARD_LAG_NS") || _ms_env_set("LF_MS_SUMMARY_FIFO")) &&
+  if ((_ms_env_set("LF_MS_GUARD_LAG_NS") || summary_wanted) &&
       _ms_env_set("LF_MS_REPORT_EVERY") && atoi(getenv("LF_MS_REPORT_EVERY")) > 1) {
     _ms_link_fatal("LF_MS_REPORT_EVERY > 1 thins the lag samples of the guard and the summary", NULL);
   }
@@ -692,12 +783,12 @@ static void _ms_link_init(void) {
     if (*end != '\0' || _ms_lc_lag_ns <= 0) _ms_link_fatal("invalid LF_MS_LC_LAG_NS", getenv("LF_MS_LC_LAG_NS"));
     _ms_lc_lag_active = true;
   }
-  if (_ms_env_set("LF_MS_SUMMARY_FIFO")) {
+  if (summary_wanted) {
     if (_ms_env_set("LF_MS_REPLAY_D")) {
-      _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_SUMMARY_FIFO cannot be combined", NULL);
+      _ms_link_fatal("LF_MS_REPLAY_D and the summary (LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK) cannot be combined", NULL);
     }
     if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
-      _ms_link_fatal("LF_MS_SUMMARY_FIFO needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
+      _ms_link_fatal("the summary (LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK) needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
     }
     if (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS")) {
       char* end = NULL;
@@ -714,10 +805,22 @@ static void _ms_link_init(void) {
       }
     }
     const char* summary_path = getenv("LF_MS_SUMMARY_FIFO");
-    // O_RDWR: opening does not wait for a reader and a write never raises SIGPIPE.
-    _ms_sum_fd = open(summary_path, O_RDWR | O_NONBLOCK);
+    if (_ms_env_set("LF_MS_SUMMARY_SINK")) {
+      // A4b: each summary line goes to a function of the process (found with dlsym), not to a FIFO
+      summary_path = getenv("LF_MS_SUMMARY_SINK");
+      *(void**)(&_ms_sum_sink) = dlsym(RTLD_DEFAULT, summary_path);
+      if (_ms_sum_sink == NULL) _ms_link_fatal("LF_MS_SUMMARY_SINK symbol not found", summary_path);
+    } else {
+      // O_RDWR: opening does not wait for a reader and a write never raises SIGPIPE.
+      _ms_sum_fd = open(summary_path, O_RDWR | O_NONBLOCK);
+      if (_ms_sum_fd < 0) _ms_link_fatal("summary channel unavailable", summary_path);
+    }
+    if (_ms_env_set("LF_MS_SUMMARY_EXT")) {
+      if (strcmp(getenv("LF_MS_SUMMARY_EXT"), "1") != 0) _ms_link_fatal("LF_MS_SUMMARY_EXT must be 1", getenv("LF_MS_SUMMARY_EXT"));
+      _ms_sum_ext_on = true;
+    }
     pthread_t thread;
-    if (_ms_sum_fd < 0 || pthread_create(&thread, NULL, _ms_summary_thread, NULL) != 0) {
+    if (pthread_create(&thread, NULL, _ms_summary_thread, NULL) != 0) {
       _ms_link_fatal("summary channel unavailable", summary_path);
     }
     pthread_detach(thread);
@@ -1243,10 +1346,17 @@ void ms_shutdown_at_exit(void) {
   pthread_mutex_lock(&_ms_lock);
   _ms_record_sink = NULL;
   pthread_mutex_unlock(&_ms_lock);
+  pthread_mutex_lock(&_ms_sum_sink_lock);
+  _ms_sum_sink = NULL;
+  pthread_mutex_unlock(&_ms_sum_sink_lock);
   ms_shutdown();
 }
 
 void ms_shutdown(void) {
+  // No summary line to the in-process sink after the program ends: its library may be torn down at exit.
+  pthread_mutex_lock(&_ms_sum_sink_lock);
+  _ms_sum_sink = NULL;
+  pthread_mutex_unlock(&_ms_sum_sink_lock);
   pthread_mutex_lock(&_ms_lock);
 
   // Avoid double shutdown (runtime hook + atexit, etc.)

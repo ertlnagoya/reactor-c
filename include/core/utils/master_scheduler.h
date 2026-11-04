@@ -138,6 +138,20 @@ void ms_on_reaction_violation(
     uint32_t microstep
 );
 
+/** B1b: counts one violation the program detected itself (e.g. an accelerator completion later than its
+ * contract); the total is the last field of the summary with LF_MS_SUMMARY_EXT=1. Any thread may call it. */
+void ms_count_external_violation(void);
+
+/** Whether the orchestrator link is active (one of its variables is set and the MS is enabled). */
+bool ms_link_is_active(void);
+
+/**
+ * Replay with LF_MS_REPLAY_X=1: whether the deadline of a reaction is to be taken as violated at
+ * this tag. Returns -1 when violations are not forced (compare physical time as usual), 1 when
+ * the record has an X for the reaction and tag, and 0 otherwise.
+ */
+int ms_replay_deadline_decision(int env_id, uint64_t reaction_index, long long logical_time_ns, uint32_t microstep);
+
 // Phase 4: Report metrics for OS-level policy decisions.
 void ms_on_metrics(
     int env_id,
