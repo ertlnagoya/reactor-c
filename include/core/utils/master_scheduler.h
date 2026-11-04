@@ -138,6 +138,10 @@ void ms_on_reaction_violation(
     uint32_t microstep
 );
 
+/** B1b: counts one violation the program detected itself (e.g. an accelerator completion later than its
+ * contract); the total is the last field of the summary with LF_MS_SUMMARY_EXT=1. Any thread may call it. */
+void ms_count_external_violation(void);
+
 /** Whether the orchestrator link is active (one of its variables is set and the MS is enabled). */
 bool ms_link_is_active(void);
 

@@ -215,6 +215,8 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    so kept_total / (kept_total + shed_total) is not the LC completion rate. The period is
 //    LF_MS_SUMMARY_PERIOD_MS (default 1000). Two fields follow at the end of the line:
 //    <guard_tags> <tags>, the logical times of the period with the guard on, and all.
+//    With LF_MS_SUMMARY_EXT=1 one more field follows: <ext_violations_total>, the violations the
+//    program reported with ms_count_external_violation() (B1b: late accelerator completions).
 //  - LF_MS_GUARD_LAG_NS, LF_MS_GUARD_RELEASE_NS, LF_MS_GUARD_BUDGET: tag-scale guard.
 //    At the first decision of a logical time, the guard turns on when the latest lag
 //    sample is at or above GUARD_LAG_NS and off when it is below GUARD_RELEASE_NS.
@@ -329,6 +331,9 @@ typedef void (*ms_summary_sink_t)(const char* line);
 static ms_summary_sink_t _ms_sum_sink = NULL;
 static pthread_mutex_t _ms_sum_sink_lock = PTHREAD_MUTEX_INITIALIZER;
 static long long _ms_ctrl_last_seq = -1;
+// B1b: violations reported by the program (e.g. late accelerator completions), appended to the summary
+static long long _ms_sum_ext = 0;   // updated with __atomic builtins: any thread may report
+static bool _ms_sum_ext_on = false;  // LF_MS_SUMMARY_EXT=1
 static long _ms_sum_period_ms = 1000;
 static int64_t _ms_sum_lag_ns = 5000000;
 static long long _ms_sum_shed = 0;
@@ -390,7 +395,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
          _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS") || _ms_env_set("LF_MS_REPLAY_X") ||
-         _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK");
+         _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK") || _ms_env_set("LF_MS_SUMMARY_EXT");
 }
 
 // Caller holds _ms_lock.
@@ -549,10 +554,16 @@ static void* _ms_summary_thread(void* arg) {
     const int len = snprintf(line, sizeof(line), "summary %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n",
                              seq, (long long)_ms_now_mono_ns(), budget, shed, kept, samples, over, lag_max,
                              violations, cmd_seq, dropped, guard_tags, tags);
+    int n = len;
+    if (_ms_sum_ext_on && n > 0 && n < (int)sizeof(line)) {
+      // B1b: one more field, the total of the violations the program reported (LF_MS_SUMMARY_EXT=1)
+      n += snprintf(line + n - 1, sizeof(line) - (size_t)(n - 1), " %lld\n",
+                    __atomic_load_n(&_ms_sum_ext, __ATOMIC_RELAXED)) - 1;
+    }
     if (_ms_sum_fd >= 0) {
-      if (write(_ms_sum_fd, line, (size_t)len) != len) dropped++;
+      if (write(_ms_sum_fd, line, (size_t)n) != n) dropped++;
     } else {
-      line[len > 0 ? len - 1 : 0] = '\0';  // the sink takes the line without its newline
+      line[n > 0 ? n - 1 : 0] = '\0';  // the sink takes the line without its newline
       pthread_mutex_lock(&_ms_sum_sink_lock);
       if (_ms_sum_sink != NULL) _ms_sum_sink(line);
       pthread_mutex_unlock(&_ms_sum_sink_lock);
@@ -623,6 +634,8 @@ static void _ms_load_replay(const char* path) {
 }
 
 bool ms_link_is_active(void) { return _ms_enabled && _ms_link_active; }
+
+void ms_count_external_violation(void) { __atomic_fetch_add(&_ms_sum_ext, 1, __ATOMIC_RELAXED); }
 
 int ms_replay_deadline_decision(int env_id, uint64_t reaction_index, long long logical_time_ns, uint32_t microstep) {
   if (!_ms_replay_force_x) return -1;
@@ -721,8 +734,9 @@ static void _ms_link_init(void) {
     _ms_link_fatal("LF_MS_GUARD_RELEASE_NS and LF_MS_GUARD_BUDGET need LF_MS_GUARD_LAG_NS", NULL);
   }
   const bool summary_wanted = _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_SUMMARY_SINK");
-  if (!summary_wanted && (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS"))) {
-    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS and LF_MS_SUMMARY_LAG_NS need LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK", NULL);
+  if (!summary_wanted && (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
+                          _ms_env_set("LF_MS_SUMMARY_EXT"))) {
+    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS, LF_MS_SUMMARY_LAG_NS and LF_MS_SUMMARY_EXT need LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK", NULL);
   }
   if ((_ms_env_set("LF_MS_GUARD_LAG_NS") || summary_wanted) &&
       _ms_env_set("LF_MS_REPORT_EVERY") && atoi(getenv("LF_MS_REPORT_EVERY")) > 1) {
@@ -795,6 +809,10 @@ static void _ms_link_init(void) {
       // O_RDWR: opening does not wait for a reader and a write never raises SIGPIPE.
       _ms_sum_fd = open(summary_path, O_RDWR | O_NONBLOCK);
       if (_ms_sum_fd < 0) _ms_link_fatal("summary channel unavailable", summary_path);
+    }
+    if (_ms_env_set("LF_MS_SUMMARY_EXT")) {
+      if (strcmp(getenv("LF_MS_SUMMARY_EXT"), "1") != 0) _ms_link_fatal("LF_MS_SUMMARY_EXT must be 1", getenv("LF_MS_SUMMARY_EXT"));
+      _ms_sum_ext_on = true;
     }
     pthread_t thread;
     if (pthread_create(&thread, NULL, _ms_summary_thread, NULL) != 0) {
