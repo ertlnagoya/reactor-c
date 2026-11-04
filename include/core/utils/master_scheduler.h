@@ -75,6 +75,8 @@ bool ms_init(const char* config_path);
 void ms_register_worker(const ms_worker_info_t* info);
 void ms_report(const ms_report_t* report);
 void ms_shutdown(void);
+/** Stops the program when two different reactions have the same stable key (link active only). */
+void ms_check_reaction_key(uint64_t key, const void* reaction, const char* instance, int number);
 /** ms_shutdown from atexit: the record sink is dropped first, since the library behind it may be torn down. */
 void ms_shutdown_at_exit(void);
 

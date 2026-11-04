@@ -1112,6 +1112,11 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
     }
 #endif // FEDERATED_CENTRALIZED
 
+    ms_check_reaction_key(_ms_reaction_stable_key(current_reaction_to_execute), current_reaction_to_execute,
+                          current_reaction_to_execute->self != NULL
+                              ? lf_reactor_full_name((self_base_t*)current_reaction_to_execute->self)
+                              : current_reaction_to_execute->name,
+                          current_reaction_to_execute->number);
     bool violation = _lf_worker_handle_violations(env, worker_number, current_reaction_to_execute);
     bool degraded_skip = false;
     if (!violation) {

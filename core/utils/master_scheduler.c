@@ -210,6 +210,12 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    While on, the budget of that logical time is min(commanded budget, GUARD_BUDGET). The budget
 //    acts only under degrade pressure, so GUARD_LAG_NS below LF_MS_DEGRADE_LAG_NS (or no lag
 //    threshold at all) would turn the guard on without any effect; such a setting is refused.
+//  - Reaction keys: while the link is active, every reaction is checked when it is first
+//    dispatched; two different reactions with the same 64-bit key stop the program, since a
+//    D record could not tell them apart (docs/DETERMINISM.ja.md, P5). Only reactions that are
+//    dispatched are seen, which covers every collision that could mislead a replay: both
+//    reactions would have to be triggered. LF_MS_KEY_CHECK_TEST_BITS=<n> (testing only) makes the
+//    check compare the low n bits of the keys, to provoke a collision.
 //  - LF_MS_BUDGET_CAP=1: the budget b caps the LC reactions of every logical time, with or
 //    without degrade pressure (default: only under pressure). Needs LF_MS_DEGRADE_ENABLE,
 //    degrade_action=skip and default_budget >= 0.
@@ -288,6 +294,13 @@ static int64_t _ms_guard_budget = 0;
 static bool _ms_guard_on = false;
 static bool _ms_lc_lag_active = false;
 static bool _ms_budget_cap = false;
+#define MS_KEY_TABLE 4096
+static uint64_t _ms_key_tab_key[MS_KEY_TABLE];
+static const void* _ms_key_tab_ptr[MS_KEY_TABLE];
+static const char* _ms_key_tab_name[MS_KEY_TABLE];
+static int _ms_key_tab_number[MS_KEY_TABLE];
+static int _ms_key_tab_count = 0;
+static uint64_t _ms_key_check_mask = ~0ULL;
 static bool _ms_lag_mono = false;
 static int64_t _ms_lag_anchor_real = 0;
 static int64_t _ms_lag_anchor_mono = -1;
@@ -359,7 +372,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
-         _ms_env_set("LF_MS_BUDGET_CAP");
+         _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS");
 }
 
 // Caller holds _ms_lock.
@@ -591,6 +604,11 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_KEY_CHECK_TEST_BITS")) {
+    const int bits = atoi(getenv("LF_MS_KEY_CHECK_TEST_BITS"));
+    if (bits < 1 || bits > 63) _ms_link_fatal("invalid LF_MS_KEY_CHECK_TEST_BITS", getenv("LF_MS_KEY_CHECK_TEST_BITS"));
+    _ms_key_check_mask = (1ULL << bits) - 1;
   }
   if (_ms_env_set("LF_MS_BUDGET_CAP")) {
     if (_ms_env_set("LF_MS_REPLAY_D")) _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_BUDGET_CAP cannot be combined", NULL);
@@ -1639,6 +1657,44 @@ void ms_on_reaction_end(
           env_id, (unsigned long long)reaction_index
       );
     }
+}
+
+void ms_check_reaction_key(uint64_t key, const void* reaction, const char* instance, int number) {
+  const char* name = instance;
+  if (!_ms_enabled || !_ms_link_active || reaction == NULL) return;
+  const uint64_t k = key & _ms_key_check_mask;
+  const char* other = NULL;
+  int other_number = -1;
+  bool full = false;
+  pthread_mutex_lock(&_ms_lock);
+  size_t i = (size_t)((k ^ (k >> 29) ^ (k >> 47)) & (MS_KEY_TABLE - 1));
+  for (int n = 0; n < MS_KEY_TABLE; n++, i = (i + 1) & (MS_KEY_TABLE - 1)) {
+    if (_ms_key_tab_ptr[i] == NULL) {
+      if (_ms_key_tab_count >= MS_KEY_TABLE / 2) {
+        full = true;
+        break;
+      }
+      _ms_key_tab_key[i] = k;
+      _ms_key_tab_ptr[i] = reaction;
+      _ms_key_tab_name[i] = name;
+      _ms_key_tab_number[i] = number;
+      _ms_key_tab_count++;
+      break;
+    }
+    if (_ms_key_tab_ptr[i] == reaction) break;
+    if (_ms_key_tab_key[i] == k) {
+      other = _ms_key_tab_name[i] != NULL ? _ms_key_tab_name[i] : "(unnamed)";
+      other_number = _ms_key_tab_number[i];
+      break;
+    }
+  }
+  pthread_mutex_unlock(&_ms_lock);
+  if (full) _ms_link_fatal("more reactions than the key check can hold", name);
+  if (other != NULL) {
+    fprintf(stderr, "master_scheduler: reactions %s/%d and %s/%d have the same key %llu\n", other, other_number,
+            name != NULL ? name : "(unnamed)", number, (unsigned long long)key);
+    _ms_link_fatal("reaction key collision: a D record could not tell the two apart", NULL);
+  }
 }
 
 void ms_on_reaction_violation(
