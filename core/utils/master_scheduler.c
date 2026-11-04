@@ -208,6 +208,11 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    and the summary read. Each change is recorded:
 //      G,<elapsed_ns>,<microstep>,<1 on or 0 off>,<lag_ns>
 //    Replay sheds by D only and ignores G.
+//  - LF_MS_LC_LAG_NS: reaction-scale shedding. A degradable LC reaction is shed when, at
+//    the moment it would start, the lag (physical time - its logical time) exceeds this
+//    value, the same test as an LF deadline handler. Unlike a deadline handler, the shed
+//    is recorded as a D record, so a replay reproduces it. It acts with or without
+//    degrade pressure, before the budget. Needs LF_MS_DEGRADE_ENABLE and degrade_action=skip.
 // Times are relative to the start time, so they compare across runs. The link
 // supports one environment of the threaded runtime and refuses anything else.
 typedef struct {
@@ -243,6 +248,8 @@ static int64_t _ms_guard_on_ns = 0;
 static int64_t _ms_guard_off_ns = 0;
 static int64_t _ms_guard_budget = 0;
 static bool _ms_guard_on = false;
+static bool _ms_lc_lag_active = false;
+static int64_t _ms_lc_lag_ns = 0;
 static int64_t _ms_guard_last_lag_ns = 0;
 static int64_t _ms_tag_last_logical_ns = 0;
 static bool _ms_tag_seen_logical = false;
@@ -261,6 +268,7 @@ static long long _ms_sum_x = 0;
 static long long _ms_sum_cmd_seq = -1;
 
 extern int64_t lf_time_start(void);
+extern int64_t lf_time_physical(void);
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -294,7 +302,8 @@ static bool _ms_link_requested(void) {
   return _ms_env_set("LF_MS_CTRL_FIFO") || _ms_env_set("LF_MS_DECISION_LOG") || _ms_env_set("LF_MS_REPLAY_D") ||
          _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_GUARD_LAG_NS") ||
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
-         _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS");
+         _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
+         _ms_env_set("LF_MS_LC_LAG_NS");
 }
 
 // Caller holds _ms_lock.
@@ -570,6 +579,18 @@ static void _ms_link_init(void) {
     if (_ms_guard_off_ns == 0) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS must be > 0", NULL);
     if (_ms_guard_off_ns > _ms_guard_on_ns) _ms_link_fatal("LF_MS_GUARD_RELEASE_NS exceeds LF_MS_GUARD_LAG_NS", NULL);
     _ms_guard_active = true;
+  }
+  if (_ms_env_set("LF_MS_LC_LAG_NS")) {
+    if (_ms_env_set("LF_MS_REPLAY_D")) {
+      _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_LC_LAG_NS cannot be combined", NULL);
+    }
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
+      _ms_link_fatal("LF_MS_LC_LAG_NS needs LF_MS_DEGRADE_ENABLE and degrade_action=skip", NULL);
+    }
+    char* end = NULL;
+    _ms_lc_lag_ns = (int64_t)strtoll(getenv("LF_MS_LC_LAG_NS"), &end, 10);
+    if (*end != '\0' || _ms_lc_lag_ns <= 0) _ms_link_fatal("invalid LF_MS_LC_LAG_NS", getenv("LF_MS_LC_LAG_NS"));
+    _ms_lc_lag_active = true;
   }
   if (_ms_env_set("LF_MS_SUMMARY_FIFO")) {
     if (_ms_env_set("LF_MS_REPLAY_D")) {
@@ -1614,6 +1635,20 @@ bool ms_should_skip_reaction(
              env_id, (unsigned long long)reaction_index, dbg_crit, dbg_degr,
              dbg_pressure, dbg_hcr, dbg_rc);
     pthread_mutex_lock(&_ms_lock);
+  }
+
+  // Reaction-scale shedding (LF_MS_LC_LAG_NS): the test of a deadline handler, recorded in D.
+  if (_ms_lc_lag_active && set != NULL) {
+    ms_reaction_policy_t* lp = _ms_find_policy(env_id, reaction_index);
+    if (lp != NULL && lp->criticality == MS_CRIT_LOW && lp->degradable &&
+        (int64_t)lf_time_physical() - (int64_t)logical_time_ns > _ms_lc_lag_ns) {
+      int idx = _ms_ready_find(set, reaction_index);
+      if (idx >= 0) _ms_ready_remove_at(set, idx);
+      _ms_sum_shed++;
+      _ms_decision_log_tag_locked('D', env_id, reaction_index, logical_time_ns, microstep);
+      pthread_mutex_unlock(&_ms_lock);
+      return true;
+    }
   }
 
   if (set == NULL ||
