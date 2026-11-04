@@ -242,11 +242,15 @@ under `ms-eval/orchestration`.
 | `LF_MS_CTRL_FIFO` | FIFO from which `set_budget <seq> <budget>` lines are read. A command takes effect at the start of the next logical time; `seq` must increase. |
 | `LF_MS_DECISION_LOG` | Decision record. Lines: `D` (an LC reaction skipped), `X` (a deadline violation), `C`/`R` (a command accepted/refused), `M` (a command applied at a tag), `G` (guard on/off), `E` (end, with counts). |
 | `LF_MS_REPLAY_D` | Replay a decision record: exactly the recorded `D` reactions are skipped, and the run reports `event=replay_summary ok=1` when the skips and violations match. Cannot be combined with the live controls. |
+| `LF_MS_REPLAY_X` | `1` (with `LF_MS_REPLAY_D`): also force the recorded `X` violations. A reaction with a deadline runs its deadline handler exactly when its (tag, reaction) is in the record, instead of comparing with physical time, so programs with deadline handlers replay too. This covers reactions executed directly by their upstream reaction. |
 | `LF_MS_DECISION_SINK` | Name of a function `void f(const char* line)` (found with `dlsym`) that also receives each record line, e.g. to forward it to a logging framework. Needs `LF_MS_DECISION_LOG`. |
 | `LF_MS_GUARD_LAG_NS`, `LF_MS_GUARD_RELEASE_NS`, `LF_MS_GUARD_BUDGET` | Tag-scale guard: while the lag is at or above the first threshold (until it falls below the second), the budget is capped at `LF_MS_GUARD_BUDGET`. The guard threshold must not be below `LF_MS_DEGRADE_LAG_NS` unless `LF_MS_BUDGET_CAP=1`. |
 | `LF_MS_BUDGET_CAP` | `1`: the budget caps the LC reactions of every logical time, not only under degrade pressure. |
 | `LF_MS_LC_LAG_NS` | Reaction-scale shedding: an LC reaction whose lag exceeds this value is skipped (the test of a deadline handler) and recorded as `D`, so the run stays replayable. |
+| `LF_MS_CTRL_SOURCE` | In-process command source instead of the FIFO: name of a function `int f(void (*submit)(long long seq, long long budget))` (found with `dlsym`), called once at start-up; a non-zero return stops the program. Submitted commands go through the same acceptance, records and timing as FIFO lines. Cannot be combined with `LF_MS_CTRL_FIFO` or `LF_MS_REPLAY_D`. |
 | `LF_MS_SUMMARY_FIFO`, `LF_MS_SUMMARY_PERIOD_MS`, `LF_MS_SUMMARY_LAG_NS` | Periodic one-line summary for the orchestrator. |
+| `LF_MS_SUMMARY_SINK` | In-process summary receiver instead of the FIFO: name of a function `void f(const char* line)` that receives each summary line without its newline. It is not called after the MS has shut down. Cannot be combined with `LF_MS_SUMMARY_FIFO`. |
+| `LF_MS_SUMMARY_EXT` | `1`: append one field to each summary line, the running total of violations the program reported with `ms_count_external_violation()`. Needs a summary FIFO or sink. Without it the line keeps its fields, for readers that expect a fixed count. |
 | `LF_MS_LAG_CLOCK` | `realtime` (default) or `monotonic` (experimental): the clock on which the MS measures the lag for its decisions. The runtime itself still waits on `CLOCK_REALTIME`. |
 | `LF_MS_KEY_CHECK_TEST_BITS` | Test only: truncate reaction keys to provoke the key-collision check. |
 
