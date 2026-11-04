@@ -3744,6 +3744,13 @@
       <arglist>(uint64_t key, const void *reaction, const char *instance, int number)</arglist>
     </member>
     <member kind="function">
+      <type>void</type>
+      <name>ms_count_external_violation</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a13a27ee677fb8b290d50a227f1f09d00</anchor>
+      <arglist>(void)</arglist>
+    </member>
+    <member kind="function">
       <type>int</type>
       <name>ms_gettid</name>
       <anchorfile>master__scheduler_8h.html</anchorfile>
@@ -3756,6 +3763,13 @@
       <anchorfile>master__scheduler_8h.html</anchorfile>
       <anchor>a7404d6b7c139c5fbab94aa5197add2f6</anchor>
       <arglist>(const char *config_path)</arglist>
+    </member>
+    <member kind="function">
+      <type>bool</type>
+      <name>ms_link_is_active</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>ab7b44748033ed4e4a5733a3d176d414f</anchor>
+      <arglist>(void)</arglist>
     </member>
     <member kind="function">
       <type>void</type>
@@ -3828,6 +3842,13 @@
       <arglist>(const ms_worker_info_t *info)</arglist>
     </member>
     <member kind="function">
+      <type>int</type>
+      <name>ms_replay_deadline_decision</name>
+      <anchorfile>master__scheduler_8h.html</anchorfile>
+      <anchor>a62f54e565f832930dcc69a469cc30eac</anchor>
+      <arglist>(int env_id, uint64_t reaction_index, long long logical_time_ns, uint32_t microstep)</arglist>
+    </member>
+    <member kind="function">
       <type>void</type>
       <name>ms_report</name>
       <anchorfile>master__scheduler_8h.html</anchorfile>
@@ -3875,6 +3896,27 @@
       <anchorfile>master__scheduler_8h.html</anchorfile>
       <anchor>aae9872a1e8a6364bef82b36833ec212d</anchor>
       <arglist>(int worker_id, ms_os_policy_t *out_policy)</arglist>
+    </member>
+  </compound>
+  <compound kind="file">
+    <name>ms_reaction_key.h</name>
+    <path>/Users/runner/work/reactor-c/reactor-c/include/core/utils/</path>
+    <filename>ms__reaction__key_8h.html</filename>
+    <includes id="lf__types_8h" name="lf_types.h" local="yes" import="no" module="no" objc="no">lf_types.h</includes>
+    <includes id="reactor_8h" name="reactor.h" local="yes" import="no" module="no" objc="no">reactor.h</includes>
+    <member kind="function" static="yes">
+      <type>static uint64_t</type>
+      <name>_ms_hash_str64</name>
+      <anchorfile>ms__reaction__key_8h.html</anchorfile>
+      <anchor>abf1d088c35e63251145d6f0cf0f143ad</anchor>
+      <arglist>(const char *s)</arglist>
+    </member>
+    <member kind="function" static="yes">
+      <type>static uint64_t</type>
+      <name>_ms_reaction_stable_key</name>
+      <anchorfile>ms__reaction__key_8h.html</anchorfile>
+      <anchor>adcf2a8f5f7599f1fe2ecf2383b9bd697</anchor>
+      <arglist>(reaction_t *reaction)</arglist>
     </member>
   </compound>
   <compound kind="file">
@@ -14687,6 +14729,7 @@
     <dir>/Users/runner/work/reactor-c/reactor-c/include/core/utils/impl</dir>
     <file>lf_semaphore.h</file>
     <file>master_scheduler.h</file>
+    <file>ms_reaction_key.h</file>
     <file>pqueue.h</file>
     <file>pqueue_base.h</file>
     <file>pqueue_tag.h</file>

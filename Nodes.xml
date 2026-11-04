@@ -10549,6 +10549,11 @@
                               <Anchor>a647c0c9f91cd261bed92200bff68b2b3</Anchor>
                              </Node>
                              <Node>
+                              <Name>ms_count_external_violation</Name>
+                              <Path>master__scheduler_8h.html</Path>
+                              <Anchor>a13a27ee677fb8b290d50a227f1f09d00</Anchor>
+                             </Node>
+                             <Node>
                               <Name>ms_gettid</Name>
                               <Path>master__scheduler_8h.html</Path>
                               <Anchor>a482606b79cedb0203d1574ac91ffae06</Anchor>
@@ -10557,6 +10562,11 @@
                               <Name>ms_init</Name>
                               <Path>master__scheduler_8h.html</Path>
                               <Anchor>a7404d6b7c139c5fbab94aa5197add2f6</Anchor>
+                             </Node>
+                             <Node>
+                              <Name>ms_link_is_active</Name>
+                              <Path>master__scheduler_8h.html</Path>
+                              <Anchor>ab7b44748033ed4e4a5733a3d176d414f</Anchor>
                              </Node>
                              <Node>
                               <Name>ms_log_os_policy_apply</Name>
@@ -10609,6 +10619,11 @@
                               <Anchor>a5da2b07673286ce106e35c42bc00b76b</Anchor>
                              </Node>
                              <Node>
+                              <Name>ms_replay_deadline_decision</Name>
+                              <Path>master__scheduler_8h.html</Path>
+                              <Anchor>a62f54e565f832930dcc69a469cc30eac</Anchor>
+                             </Node>
+                             <Node>
                               <Name>ms_report</Name>
                               <Path>master__scheduler_8h.html</Path>
                               <Anchor>acaf46a0c3e765eab652830a306b6df75</Anchor>
@@ -10642,6 +10657,22 @@
                               <Name>ms_take_os_policy</Name>
                               <Path>master__scheduler_8h.html</Path>
                               <Anchor>aae9872a1e8a6364bef82b36833ec212d</Anchor>
+                             </Node>
+                            </Subnodes>
+                           </Node>
+                           <Node>
+                            <Name>ms_reaction_key.h</Name>
+                            <Path>ms__reaction__key_8h.html</Path>
+                          <Subnodes>
+                             <Node>
+                              <Name>_ms_hash_str64</Name>
+                              <Path>ms__reaction__key_8h.html</Path>
+                              <Anchor>abf1d088c35e63251145d6f0cf0f143ad</Anchor>
+                             </Node>
+                             <Node>
+                              <Name>_ms_reaction_stable_key</Name>
+                              <Path>ms__reaction__key_8h.html</Path>
+                              <Anchor>adcf2a8f5f7599f1fe2ecf2383b9bd697</Anchor>
                              </Node>
                             </Subnodes>
                            </Node>

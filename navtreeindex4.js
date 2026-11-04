@@ -1,5 +1,12 @@
 var NAVTREEINDEX4 =
 {
+"structdeque__t.html#ac8a00537c1990f31e76114c498c86b29":[3,2,10,2],
+"structdeque__t.html#af38a8d05684909a3674ebcb3beeff730":[3,2,10,1],
+"structenclave__info__t.html":[3,8,4],
+"structenclave__info__t.html#a870d2cfd561987d5e72cd5d32a0518da":[3,8,4,1],
+"structenclave__info__t.html#aa9db6017d3a2df60078dc26e1176e236":[3,8,4,2],
+"structenclave__info__t.html#ad8bf825ccce43f9a0ac1b92e720cd8f1":[3,8,4,0],
+"structenvironment__t.html":[3,4,18],
 "structenvironment__t.html#a0787a24fb8262fbe34b47046efe899a5":[3,4,18,15],
 "structenvironment__t.html#a18c1176afef786aed0a01a92561d4b40":[3,4,18,18],
 "structenvironment__t.html#a2635fdfad1b72c79e00c28c21b9c2eaf":[3,4,18,16],
@@ -242,12 +249,5 @@ var NAVTREEINDEX4 =
 "structpqueue__tag__element__t.html#a7b2eee8519e95e266c6bfe58b9c0fa1a":[4,0,36,1],
 "structpqueue__tag__element__t.html#ab559a9ee2aa4bb0b97a802cc4e0c8fa5":[4,0,36,0],
 "structreaction__t.html":[3,4,28],
-"structreaction__t.html#a1cf8e3d4461fd794f7fbecb2214cac7c":[3,4,28,11],
-"structreaction__t.html#a2bc026e89d82a877a3b7224541c25d42":[3,4,28,5],
-"structreaction__t.html#a2c42ec5e47d9ee2c7b44882d96117002":[3,4,28,14],
-"structreaction__t.html#a487aaa96abda17f7184c07ccd1e870b2":[3,4,28,1],
-"structreaction__t.html#a534c11eeddbe4c0272fc2d77abb82168":[3,4,28,13],
-"structreaction__t.html#a5af95a97a0b83dbf7954236378f1bfa2":[3,4,28,8],
-"structreaction__t.html#a6dbc6da9eb7523555e9f548438069c7e":[3,4,28,3],
-"structreaction__t.html#a75ea18d69a144fdb181857cc413ae62c":[3,4,28,17]
+"structreaction__t.html#a1cf8e3d4461fd794f7fbecb2214cac7c":[3,4,28,11]
 };

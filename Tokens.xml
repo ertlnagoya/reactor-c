@@ -5113,6 +5113,26 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>_ms_hash_str64</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>ms__reaction__key_8h.html</Path>
+    <Anchor>abf1d088c35e63251145d6f0cf0f143ad</Anchor>
+    <DeclaredIn>ms_reaction_key.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>_ms_reaction_stable_key</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>ms__reaction__key_8h.html</Path>
+    <Anchor>adcf2a8f5f7599f1fe2ecf2383b9bd697</Anchor>
+    <DeclaredIn>ms_reaction_key.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>_suppress_unused_variable_warning_for_static_variable</Name>
       <APILanguage>c</APILanguage>
       <Type>func</Type>
@@ -9633,6 +9653,16 @@
   </Token>
   <Token>
     <TokenIdentifier>
+      <Name>ms_count_external_violation</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a13a27ee677fb8b290d50a227f1f09d00</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
       <Name>ms_gettid</Name>
       <APILanguage>c</APILanguage>
       <Type>func</Type>
@@ -9689,6 +9719,16 @@
     </TokenIdentifier>
     <Path>master__scheduler_8h.html</Path>
     <Anchor>a11d02f1c94f3e324feaee8fc771348a3a3ad8127598869b363d3f3729101c7af9</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_link_is_active</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>ab7b44748033ed4e4a5733a3d176d414f</Anchor>
     <DeclaredIn>master_scheduler.h</DeclaredIn>
   </Token>
   <Token>
@@ -9839,6 +9879,16 @@
     </TokenIdentifier>
     <Path>master__scheduler_8h.html</Path>
     <Anchor>a5da2b07673286ce106e35c42bc00b76b</Anchor>
+    <DeclaredIn>master_scheduler.h</DeclaredIn>
+  </Token>
+  <Token>
+    <TokenIdentifier>
+      <Name>ms_replay_deadline_decision</Name>
+      <APILanguage>c</APILanguage>
+      <Type>func</Type>
+    </TokenIdentifier>
+    <Path>master__scheduler_8h.html</Path>
+    <Anchor>a62f54e565f832930dcc69a469cc30eac</Anchor>
     <DeclaredIn>master_scheduler.h</DeclaredIn>
   </Token>
   <Token>

@@ -16,8 +16,10 @@ var master__scheduler_8h =
       [ "MS_SCHED_RR", "master__scheduler_8h.html#ad53fdf2837b2ec313bf0c985a0d1b434a382428bd4ff8e95cff41b08e6aebaaf2", null ]
     ] ],
     [ "ms_check_reaction_key", "master__scheduler_8h.html#a647c0c9f91cd261bed92200bff68b2b3", null ],
+    [ "ms_count_external_violation", "master__scheduler_8h.html#a13a27ee677fb8b290d50a227f1f09d00", null ],
     [ "ms_gettid", "master__scheduler_8h.html#a482606b79cedb0203d1574ac91ffae06", null ],
     [ "ms_init", "master__scheduler_8h.html#a7404d6b7c139c5fbab94aa5197add2f6", null ],
+    [ "ms_link_is_active", "master__scheduler_8h.html#ab7b44748033ed4e4a5733a3d176d414f", null ],
     [ "ms_log_os_policy_apply", "master__scheduler_8h.html#a2a2d6767e81f644985204e3699ec84d7", null ],
     [ "ms_log_os_policy_fail", "master__scheduler_8h.html#a7c5a45b26b98705645530602ea75aa72", null ],
     [ "ms_log_os_policy_skip", "master__scheduler_8h.html#aabe507b7157e7067fac0c56617418f87", null ],
@@ -28,6 +30,7 @@ var master__scheduler_8h =
     [ "ms_on_reaction_violation", "master__scheduler_8h.html#a7542c7b32235dd00d4b050961f6ecda8", null ],
     [ "ms_pick_next", "master__scheduler_8h.html#a949041dc8b9408052df830daa449e305", null ],
     [ "ms_register_worker", "master__scheduler_8h.html#a5da2b07673286ce106e35c42bc00b76b", null ],
+    [ "ms_replay_deadline_decision", "master__scheduler_8h.html#a62f54e565f832930dcc69a469cc30eac", null ],
     [ "ms_report", "master__scheduler_8h.html#acaf46a0c3e765eab652830a306b6df75", null ],
     [ "ms_set_enabled", "master__scheduler_8h.html#a53104a6413569b7a6e2e1535e83d4b4c", null ],
     [ "ms_set_log_level", "master__scheduler_8h.html#a638e2ce75385dea55bc447164891a15a", null ],
