@@ -560,6 +560,11 @@ static void* _ms_summary_thread(void* arg) {
       n += snprintf(line + n - 1, sizeof(line) - (size_t)(n - 1), " %lld\n",
                     __atomic_load_n(&_ms_sum_ext, __ATOMIC_RELAXED)) - 1;
     }
+    if (n <= 0) continue;
+    if (n >= (int)sizeof(line)) {  // truncated: snprintf returns the untruncated length; keep a full line
+      n = (int)sizeof(line) - 1;
+      line[n - 1] = '\n';
+    }
     if (_ms_sum_fd >= 0) {
       if (write(_ms_sum_fd, line, (size_t)n) != n) dropped++;
     } else {
