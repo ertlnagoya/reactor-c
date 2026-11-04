@@ -1112,6 +1112,11 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
     }
 #endif // FEDERATED_CENTRALIZED
 
+    ms_check_reaction_key(_ms_reaction_stable_key(current_reaction_to_execute), current_reaction_to_execute,
+                          current_reaction_to_execute->self != NULL
+                              ? lf_reactor_full_name((self_base_t*)current_reaction_to_execute->self)
+                              : current_reaction_to_execute->name,
+                          current_reaction_to_execute->number);
     bool violation = _lf_worker_handle_violations(env, worker_number, current_reaction_to_execute);
     bool degraded_skip = false;
     if (!violation) {
@@ -1119,7 +1124,15 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
           env->id,
           worker_number,
           _ms_reaction_stable_key(current_reaction_to_execute),
-          (long long)env->current_tag.time
+          (long long)env->current_tag.time,
+          (uint32_t)env->current_tag.microstep
+      );
+    } else {
+      ms_on_reaction_violation(
+          env->id,
+          _ms_reaction_stable_key(current_reaction_to_execute),
+          (long long)env->current_tag.time,
+          (uint32_t)env->current_tag.microstep
       );
     }
 
@@ -1340,7 +1353,7 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   }
 
   // Ensure MS shutdown runs on exit(), including user-code exit(0).
-  if (atexit(ms_shutdown) != 0) {
+  if (atexit(ms_shutdown_at_exit) != 0) {
     lf_print_warning("Failed to register ms_shutdown with atexit!");
   }
 
@@ -1453,6 +1466,9 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
     LF_PRINT_LOG("---- All environment worker threads exited successfully.");
   }
   _lf_normal_termination = true;
+  // Close the MS record here, before exit() tears down the static objects of other libraries
+  // (the decision-record sink may write through one of them). The atexit path is then a no-op.
+  ms_shutdown();
 
   return ret;
 }
