@@ -191,6 +191,11 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //  - LF_MS_REPLAY_D: shed exactly the D records, ignoring pressure and budget. A
 //    violation cannot be reproduced, only detected: the summary has ok=0 when the
 //    violations or the sheds of the replay differ from the record.
+//  - LF_MS_REPLAY_X=1 (with LF_MS_REPLAY_D): also reproduce the deadline violations. For a
+//    reaction with a deadline, the runtime takes the violation as given by the X records
+//    (violated iff the reaction and tag are recorded) instead of comparing physical time
+//    with the deadline, and runs the deadline handler or the body accordingly. STP
+//    violations are not forced (federated programs are not supported by the link).
 //  - LF_MS_SUMMARY_FIFO: FIFO that receives one line per period (non-blocking, a
 //    line that does not fit is dropped and counted). The thread only reads the
 //    counters, so the summary cannot change a decision of this run:
@@ -259,6 +264,7 @@ static bool _ms_link_active = false;
 static bool _ms_link_failed = false;
 static bool _ms_ctrl_active = false;
 static bool _ms_replay_active = false;
+static bool _ms_replay_force_x = false;  // LF_MS_REPLAY_X=1
 static FILE* _ms_decision_log = NULL;
 typedef void (*ms_record_sink_t)(const char* line);
 static ms_record_sink_t _ms_record_sink = NULL;
@@ -372,7 +378,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
-         _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS");
+         _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS") || _ms_env_set("LF_MS_REPLAY_X");
 }
 
 // Caller holds _ms_lock.
@@ -584,6 +590,16 @@ static void _ms_load_replay(const char* path) {
   _ms_replay_active = true;
 }
 
+bool ms_link_is_active(void) { return _ms_enabled && _ms_link_active; }
+
+int ms_replay_deadline_decision(int env_id, uint64_t reaction_index, long long logical_time_ns, uint32_t microstep) {
+  if (!_ms_replay_force_x) return -1;
+  // The X set is read-only after loading, so no lock is needed for the lookup.
+  ms_tag_key_t key = {env_id, (int64_t)logical_time_ns - lf_time_start(), microstep, reaction_index, false};
+  if (_ms_replay_x.count == 0) return 0;
+  return bsearch(&key, _ms_replay_x.keys, _ms_replay_x.count, sizeof(ms_tag_key_t), _ms_tag_key_cmp) != NULL ? 1 : 0;
+}
+
 static void _ms_link_init(void) {
   if (!_ms_link_requested()) return;
   _ms_link_active = true;
@@ -604,6 +620,11 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_REPLAY_X")) {
+    if (!_ms_env_set("LF_MS_REPLAY_D")) _ms_link_fatal("LF_MS_REPLAY_X needs LF_MS_REPLAY_D", NULL);
+    if (strcmp(getenv("LF_MS_REPLAY_X"), "1") != 0) _ms_link_fatal("LF_MS_REPLAY_X must be 1", getenv("LF_MS_REPLAY_X"));
+    _ms_replay_force_x = true;
   }
   if (_ms_env_set("LF_MS_KEY_CHECK_TEST_BITS")) {
     const int bits = atoi(getenv("LF_MS_KEY_CHECK_TEST_BITS"));

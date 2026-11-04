@@ -35,6 +35,7 @@
 #include "reactor_common.h"
 #include "watchdog.h"
 #include "master_scheduler.h"
+#include "ms_reaction_key.h"
 
 #ifdef FEDERATED
 #include "federate.h"
@@ -58,30 +59,7 @@ reaction_t* lf_sched_requeue_current_and_pick_by_key(
 );
 #endif
 
-static inline uint64_t _ms_hash_str64(const char* s) {
-  uint64_t h = 1469598103934665603ULL; // FNV-1a 64-bit offset basis
-  if (s == NULL) return h;
-  while (*s) {
-    h ^= (uint8_t)(*s++);
-    h *= 1099511628211ULL;
-  }
-  return h;
-}
-
-static inline uint64_t _ms_reaction_stable_key(reaction_t* reaction) {
-  if (reaction == NULL) return 0;
-  const char* instance = NULL;
-  if (reaction->self != NULL) {
-    instance = lf_reactor_full_name((self_base_t*)reaction->self);
-  }
-  if (instance != NULL && instance[0] != '\0') {
-    return _ms_hash_str64(instance) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
-  }
-  if (reaction->name != NULL && reaction->name[0] != '\0') {
-    return _ms_hash_str64(reaction->name) ^ (((uint64_t)(uint32_t)reaction->number) * 0x9E3779B185EBCA87ULL);
-  }
-  return ((uint64_t)(uint32_t)reaction->number << 32) ^ (uint64_t)(uint32_t)LF_LEVEL(reaction->index);
-}
+// _ms_reaction_stable_key: see ms_reaction_key.h
 
 /**
  * The maximum amount of time a worker thread should stall
@@ -839,7 +817,7 @@ int worker_thread_count = 0;
  * @return true if a deadline violation occurred. false otherwise.
  */
 static bool _lf_worker_handle_deadline_violation_for_reaction(environment_t* env, int worker_number,
-                                                              reaction_t* reaction) {
+                                                              reaction_t* reaction, int forced) {
   assert(env != GLOBAL_ENVIRONMENT);
 
   bool violation_occurred = false;
@@ -852,8 +830,9 @@ static bool _lf_worker_handle_deadline_violation_for_reaction(environment_t* env
   if (reaction->deadline >= 0LL) {
     // Get the current physical time.
     instant_t physical_time = lf_time_physical();
-    // Check for deadline violation.
-    if (reaction->deadline == 0 || physical_time > lf_time_add(env->current_tag.time, reaction->deadline)) {
+    // Check for deadline violation. A replay of the MS record may force the decision (forced >= 0).
+    if (forced >= 0 ? forced == 1
+                    : (reaction->deadline == 0 || physical_time > lf_time_add(env->current_tag.time, reaction->deadline))) {
       // Deadline violation has occurred.
       tracepoint_reaction_deadline_missed(env, reaction, worker_number);
       violation_occurred = true;
@@ -954,8 +933,13 @@ static bool _lf_worker_handle_STP_violation_for_reaction(environment_t* env, int
 static bool _lf_worker_handle_violations(environment_t* env, int worker_number, reaction_t* reaction) {
   bool violation = false;
 
+  int forced = -1;
+  if (reaction->deadline >= 0LL && ms_link_is_active()) {
+    forced = ms_replay_deadline_decision(env->id, _ms_reaction_stable_key(reaction), (long long)env->current_tag.time,
+                                         (uint32_t)env->current_tag.microstep);
+  }
   violation = _lf_worker_handle_STP_violation_for_reaction(env, worker_number, reaction) ||
-              _lf_worker_handle_deadline_violation_for_reaction(env, worker_number, reaction);
+              _lf_worker_handle_deadline_violation_for_reaction(env, worker_number, reaction, forced);
   return violation;
 }
 
