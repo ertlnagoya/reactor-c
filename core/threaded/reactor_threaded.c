@@ -1348,7 +1348,7 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
   }
 
   // Ensure MS shutdown runs on exit(), including user-code exit(0).
-  if (atexit(ms_shutdown) != 0) {
+  if (atexit(ms_shutdown_at_exit) != 0) {
     lf_print_warning("Failed to register ms_shutdown with atexit!");
   }
 
@@ -1461,6 +1461,9 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
     LF_PRINT_LOG("---- All environment worker threads exited successfully.");
   }
   _lf_normal_termination = true;
+  // Close the MS record here, before exit() tears down the static objects of other libraries
+  // (the decision-record sink may write through one of them). The atexit path is then a no-op.
+  ms_shutdown();
 
   return ret;
 }

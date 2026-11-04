@@ -75,6 +75,8 @@ bool ms_init(const char* config_path);
 void ms_register_worker(const ms_worker_info_t* info);
 void ms_report(const ms_report_t* report);
 void ms_shutdown(void);
+/** ms_shutdown from atexit: the record sink is dropped first, since the library behind it may be torn down. */
+void ms_shutdown_at_exit(void);
 
 void ms_set_log_level(ms_log_level_t level);
 void ms_set_enabled(bool enabled);

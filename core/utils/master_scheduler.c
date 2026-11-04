@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
+#include <dlfcn.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 
@@ -213,6 +214,11 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    value, the same test as an LF deadline handler. Unlike a deadline handler, the shed
 //    is recorded as a D record, so a replay reproduces it. It acts with or without
 //    degrade pressure, before the budget. Needs LF_MS_DEGRADE_ENABLE and degrade_action=skip.
+//  - LF_MS_DECISION_SINK=<symbol>: also hand every line of the decision record (without the
+//    newline) to the C function `void <symbol>(const char*)`, looked up with dlsym in the
+//    running program, e.g. score_lf_log_record, which writes it through S-CORE mw::log. The
+//    runtime does not link S-CORE. Needs LF_MS_DECISION_LOG; the file and the sink get the
+//    same lines, in the same order, under the same lock.
 // Times are relative to the start time, so they compare across runs. The link
 // supports one environment of the threaded runtime and refuses anything else.
 typedef struct {
@@ -235,6 +241,24 @@ static bool _ms_link_failed = false;
 static bool _ms_ctrl_active = false;
 static bool _ms_replay_active = false;
 static FILE* _ms_decision_log = NULL;
+typedef void (*ms_record_sink_t)(const char* line);
+static ms_record_sink_t _ms_record_sink = NULL;
+// One line of the decision record, to the file and the sink. Caller holds _ms_lock (or runs alone).
+static void _ms_rec(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void _ms_rec(const char* fmt, ...) {
+  char line[256];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(line, sizeof(line), fmt, ap);
+  va_end(ap);
+  if (n < 0) return;
+  if (_ms_decision_log != NULL) fputs(line, _ms_decision_log);
+  if (_ms_record_sink != NULL) {
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+    _ms_record_sink(line);
+  }
+}
 static long long _ms_decision_d_count = 0;
 static long long _ms_decision_x_count = 0;
 static bool _ms_ctrl_pending = false;
@@ -303,7 +327,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_GUARD_LAG_NS") ||
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
-         _ms_env_set("LF_MS_LC_LAG_NS");
+         _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK");
 }
 
 // Caller holds _ms_lock.
@@ -316,7 +340,7 @@ static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) 
   if (_ms_guard_active) {
     const bool on = _ms_guard_on ? _ms_guard_last_lag_ns >= _ms_guard_off_ns : _ms_guard_last_lag_ns >= _ms_guard_on_ns;
     if (on != _ms_guard_on && _ms_decision_log != NULL) {
-      fprintf(_ms_decision_log, "G,%lld,%u,%d,%lld\n", (long long)((int64_t)logical_time_ns - lf_time_start()),
+      _ms_rec("G,%lld,%u,%d,%lld\n", (long long)((int64_t)logical_time_ns - lf_time_start()),
               (unsigned)microstep, on ? 1 : 0, (long long)_ms_guard_last_lag_ns);
     }
     _ms_guard_on = on;
@@ -327,7 +351,7 @@ static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) 
   _ms_policy.default_budget = _ms_ctrl_pending_budget;
   _ms_sum_cmd_seq = _ms_ctrl_pending_seq;
   if (_ms_decision_log != NULL) {
-    fprintf(_ms_decision_log, "M,%lld,%lld,%lld,%u,%lld,%lld\n",
+    _ms_rec("M,%lld,%lld,%lld,%u,%lld,%lld\n",
             _ms_ctrl_pending_seq, (long long)_ms_ctrl_pending_budget,
             (long long)((int64_t)logical_time_ns - lf_time_start()), (unsigned)microstep,
             (long long)_ms_ctrl_pending_recv_ns, (long long)_ms_now_mono_ns());
@@ -338,7 +362,7 @@ static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) 
 static void _ms_decision_log_tag_locked(char kind, int env_id, uint64_t reaction_index,
                                         long long logical_time_ns, uint32_t microstep) {
   if (_ms_decision_log == NULL) return;
-  fprintf(_ms_decision_log, "%c,%d,%lld,%u,%llu\n", kind, env_id,
+  _ms_rec("%c,%d,%lld,%u,%llu\n", kind, env_id,
           (long long)((int64_t)logical_time_ns - lf_time_start()), (unsigned)microstep,
           (unsigned long long)reaction_index);
   if (kind == 'D') _ms_decision_d_count++;
@@ -407,10 +431,10 @@ static void* _ms_ctrl_thread(void* arg) {
       _ms_ctrl_pending_recv_ns = recv_ns;
       _ms_ctrl_pending = true;
       if (_ms_decision_log != NULL) {
-        fprintf(_ms_decision_log, "C,%lld,%lld,%lld\n", seq, budget, (long long)recv_ns);
+        _ms_rec("C,%lld,%lld,%lld\n", seq, budget, (long long)recv_ns);
       }
     } else if (_ms_decision_log != NULL) {
-      fprintf(_ms_decision_log, "R,%lld\n", (long long)recv_ns);
+      _ms_rec("R,%lld\n", (long long)recv_ns);
     }
     pthread_mutex_unlock(&_ms_lock);
     if (valid) last_seq = seq;
@@ -534,6 +558,12 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_DECISION_SINK")) {
+    if (!_ms_env_set("LF_MS_DECISION_LOG")) _ms_link_fatal("LF_MS_DECISION_SINK needs LF_MS_DECISION_LOG", NULL);
+    // POSIX: assign through the object pointer, since ISO C forbids the cast (-Werror=pedantic)
+    *(void**)(&_ms_record_sink) = dlsym(RTLD_DEFAULT, getenv("LF_MS_DECISION_SINK"));
+    if (_ms_record_sink == NULL) _ms_link_fatal("LF_MS_DECISION_SINK symbol not found", getenv("LF_MS_DECISION_SINK"));
   }
   if (_ms_env_set("LF_MS_CTRL_FIFO")) {
     if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP) {
@@ -1049,7 +1079,7 @@ static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
 
 // atexit() handler must be a function with signature void(void).
 static void _ms_shutdown_atexit(void) {
-  ms_shutdown();
+  ms_shutdown_at_exit();
 }
 
 // ---------------- Public API ----------------
@@ -1139,6 +1169,13 @@ bool ms_init(const char* config_path) {
   return true;
 }
 
+void ms_shutdown_at_exit(void) {
+  pthread_mutex_lock(&_ms_lock);
+  _ms_record_sink = NULL;
+  pthread_mutex_unlock(&_ms_lock);
+  ms_shutdown();
+}
+
 void ms_shutdown(void) {
   pthread_mutex_lock(&_ms_lock);
 
@@ -1158,7 +1195,7 @@ void ms_shutdown(void) {
   }
   if (_ms_decision_log != NULL) {
     if (!_ms_link_failed) {
-      fprintf(_ms_decision_log, "E,%lld,%lld,%lld\n", _ms_decision_d_count, _ms_decision_x_count,
+      _ms_rec("E,%lld,%lld,%lld\n", _ms_decision_d_count, _ms_decision_x_count,
               _ms_ctrl_pending ? _ms_ctrl_pending_seq : -1LL);
     }
     fclose(_ms_decision_log);
