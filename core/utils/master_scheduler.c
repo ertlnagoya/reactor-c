@@ -214,6 +214,10 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    value, the same test as an LF deadline handler. Unlike a deadline handler, the shed
 //    is recorded as a D record, so a replay reproduces it. It acts with or without
 //    degrade pressure, before the budget. Needs LF_MS_DEGRADE_ENABLE and degrade_action=skip.
+//  - LF_MS_LAG_CLOCK=monotonic: measure the lag that the MS decisions read (the degrade pressure,
+//    the guard, the summary and LF_MS_LC_LAG_NS) on CLOCK_MONOTONIC, anchored to CLOCK_REALTIME at
+//    the first measurement, instead of on CLOCK_REALTIME. A step of the system clock (time sync)
+//    then does not move the lag. The runtime itself still waits on CLOCK_REALTIME.
 //  - LF_MS_DECISION_SINK=<symbol>: also hand every line of the decision record (without the
 //    newline) to the C function `void <symbol>(const char*)`, looked up with dlsym in the
 //    running program, e.g. score_lf_log_record, which writes it through S-CORE mw::log. The
@@ -273,6 +277,9 @@ static int64_t _ms_guard_off_ns = 0;
 static int64_t _ms_guard_budget = 0;
 static bool _ms_guard_on = false;
 static bool _ms_lc_lag_active = false;
+static bool _ms_lag_mono = false;
+static int64_t _ms_lag_anchor_real = 0;
+static int64_t _ms_lag_anchor_mono = -1;
 static int64_t _ms_lc_lag_ns = 0;
 static int64_t _ms_guard_last_lag_ns = 0;
 static int64_t _ms_tag_last_logical_ns = 0;
@@ -293,6 +300,19 @@ static long long _ms_sum_cmd_seq = -1;
 
 extern int64_t lf_time_start(void);
 extern int64_t lf_time_physical(void);
+
+static int64_t _ms_mono_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+// Physical time for the lag the MS reads: CLOCK_REALTIME, or (LF_MS_LAG_CLOCK=monotonic) the elapsed
+// CLOCK_MONOTONIC time since the anchor taken when the link starts, added to CLOCK_REALTIME then.
+static int64_t _ms_lag_physical_ns(void) {
+  if (!_ms_lag_mono) return lf_time_physical();
+  return _ms_lag_anchor_real + (_ms_mono_ns() - _ms_lag_anchor_mono);
+}
 
 static int64_t _ms_now_mono_ns(void) {
   struct timespec ts;
@@ -327,7 +347,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_GUARD_LAG_NS") ||
          _ms_env_set("LF_MS_GUARD_RELEASE_NS") || _ms_env_set("LF_MS_GUARD_BUDGET") ||
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
-         _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK");
+         _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK");
 }
 
 // Caller holds _ms_lock.
@@ -558,6 +578,14 @@ static void _ms_link_init(void) {
     if (_ms_decision_log == NULL) _ms_link_fatal("cannot open LF_MS_DECISION_LOG", decision_path);
     // One flush per run in the usual case: a write under _ms_lock stalls every worker.
     setvbuf(_ms_decision_log, NULL, _IOFBF, 1 << 22);
+  }
+  if (_ms_env_set("LF_MS_LAG_CLOCK")) {
+    if (strcmp(getenv("LF_MS_LAG_CLOCK"), "monotonic") == 0) {
+      _ms_lag_anchor_real = lf_time_physical();
+      _ms_lag_anchor_mono = _ms_mono_ns();
+      _ms_lag_mono = true;
+    }
+    else if (strcmp(getenv("LF_MS_LAG_CLOCK"), "realtime") != 0) _ms_link_fatal("LF_MS_LAG_CLOCK must be realtime or monotonic", getenv("LF_MS_LAG_CLOCK"));
   }
   if (_ms_env_set("LF_MS_DECISION_SINK")) {
     if (!_ms_env_set("LF_MS_DECISION_LOG")) _ms_link_fatal("LF_MS_DECISION_SINK needs LF_MS_DECISION_LOG", NULL);
@@ -1678,7 +1706,7 @@ bool ms_should_skip_reaction(
   if (_ms_lc_lag_active && set != NULL) {
     ms_reaction_policy_t* lp = _ms_find_policy(env_id, reaction_index);
     if (lp != NULL && lp->criticality == MS_CRIT_LOW && lp->degradable &&
-        (int64_t)lf_time_physical() - (int64_t)logical_time_ns > _ms_lc_lag_ns) {
+        _ms_lag_physical_ns() - (int64_t)logical_time_ns > _ms_lc_lag_ns) {
       int idx = _ms_ready_find(set, reaction_index);
       if (idx >= 0) _ms_ready_remove_at(set, idx);
       _ms_sum_shed++;
@@ -1791,6 +1819,11 @@ void ms_on_metrics(
 
   if (!_ms_enabled) return;
   if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return;
+  if (_ms_lag_mono) {
+    // Same logical time, physical time from the monotonic clock (LF_MS_LAG_CLOCK=monotonic)
+    const int64_t logical = (int64_t)now_ns - lag_ns;
+    lag_ns = _ms_lag_physical_ns() - logical;
+  }
 
   ms_criticality_t crit = MS_CRIT_HIGH;
   int desired_delta = 0;
