@@ -226,6 +226,35 @@ At the implementation level, validate Phase 4 by checking that
 
 ---
 
+## Orchestrator link (opt-in)
+
+An external orchestrator can set the low-criticality (LC) budget per logical time,
+and the MS keeps a small decision record from which a run can be replayed. The link
+is off unless one of the variables below is set. The controls (command FIFO, guard,
+budget cap, lag shedding, summary) need `LF_MS_DEGRADE_ENABLE` with
+`degrade_action=skip`. An invalid setting stops the program at start-up with a
+`master_scheduler: ...` message instead of running with a silent fallback. The evaluation (design, preregistration, results) lives in
+[ertlnagoya/lf-ms-evaluation](https://github.com/ertlnagoya/lf-ms-evaluation)
+under `ms-eval/orchestration`.
+
+| Variable | Meaning |
+| --- | --- |
+| `LF_MS_CTRL_FIFO` | FIFO from which `set_budget <seq> <budget>` lines are read. A command takes effect at the start of the next logical time; `seq` must increase. |
+| `LF_MS_DECISION_LOG` | Decision record. Lines: `D` (an LC reaction skipped), `X` (a deadline violation), `C`/`R` (a command accepted/refused), `M` (a command applied at a tag), `G` (guard on/off), `E` (end, with counts). |
+| `LF_MS_REPLAY_D` | Replay a decision record: exactly the recorded `D` reactions are skipped, and the run reports `event=replay_summary ok=1` when the skips and violations match. Cannot be combined with the live controls. |
+| `LF_MS_DECISION_SINK` | Name of a function `void f(const char* line)` (found with `dlsym`) that also receives each record line, e.g. to forward it to a logging framework. Needs `LF_MS_DECISION_LOG`. |
+| `LF_MS_GUARD_LAG_NS`, `LF_MS_GUARD_RELEASE_NS`, `LF_MS_GUARD_BUDGET` | Tag-scale guard: while the lag is at or above the first threshold (until it falls below the second), the budget is capped at `LF_MS_GUARD_BUDGET`. The guard threshold must not be below `LF_MS_DEGRADE_LAG_NS` unless `LF_MS_BUDGET_CAP=1`. |
+| `LF_MS_BUDGET_CAP` | `1`: the budget caps the LC reactions of every logical time, not only under degrade pressure. |
+| `LF_MS_LC_LAG_NS` | Reaction-scale shedding: an LC reaction whose lag exceeds this value is skipped (the test of a deadline handler) and recorded as `D`, so the run stays replayable. |
+| `LF_MS_SUMMARY_FIFO`, `LF_MS_SUMMARY_PERIOD_MS`, `LF_MS_SUMMARY_LAG_NS` | Periodic one-line summary for the orchestrator. |
+| `LF_MS_LAG_CLOCK` | `realtime` (default) or `monotonic` (experimental): the clock on which the MS measures the lag for its decisions. The runtime itself still waits on `CLOCK_REALTIME`. |
+| `LF_MS_KEY_CHECK_TEST_BITS` | Test only: truncate reaction keys to provoke the key-collision check. |
+
+Replay depends on reaction keys being unique; while the link is active the runtime
+checks this and stops on a collision.
+
+---
+
 ## Role in the Overall Roadmap
 
 - **Phase 0.5** — Worker and environment registration
