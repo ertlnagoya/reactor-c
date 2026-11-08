@@ -399,7 +399,8 @@ static bool _ms_link_requested(void) {
 }
 
 // Caller holds _ms_lock.
-// Runs once per logical time: applies a pending command, then updates the guard.
+// Runs once per logical time: updates the guard from the latest lag sample,
+// then applies a pending command (so the budget is fixed for the whole tag).
 static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) {
   if (_ms_tag_seen_logical && _ms_tag_last_logical_ns == (int64_t)logical_time_ns) return;
   _ms_tag_seen_logical = true;
