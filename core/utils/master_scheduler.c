@@ -242,6 +242,18 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    value, the same test as an LF deadline handler. Unlike a deadline handler, the shed
 //    is recorded as a D record, so a replay reproduces it. It acts with or without
 //    degrade pressure, before the budget. Needs LF_MS_DEGRADE_ENABLE and degrade_action=skip.
+//  - LF_MS_SLACK_PERIOD_NS, LF_MS_SLACK_DEADLINE_NS (and optionally LF_MS_SLACK_MARGIN_NS, default
+//    1 ms, LF_MS_SLACK_WORKERS, default 2): the slack budget. At the first decision of each logical
+//    time t, the MS predicts the lag at which the HC of the next period (t + PERIOD) will start if
+//    k LC reactions of t run: lag(k) = lag0 + (H + k C) / W - PERIOD + E, where lag0 is the lag now,
+//    C the mean execution time of an LC reaction, H the mean execution time of the HC reactions of
+//    a logical time (both moving averages of what the MS measured, wall time), W the workers, and E
+//    the mean error of this prediction at the earlier logical times. The budget of t is the largest
+//    k with lag(k) <= DEADLINE - MARGIN, capped by the commanded budget, and applies with or without
+//    degrade pressure. The decisions take physical time into account like every other shed, and
+//    each shed is a D record, so a replay reproduces them. Each logical time is recorded:
+//      S,<elapsed_ns>,<microstep>,<budget>,<lag0_ns>,<C_ns>,<H_ns>,<E_ns>
+//    Replay sheds by D only and ignores S. Cannot be combined with LF_MS_REPLAY_D.
 //  - LF_MS_LAG_CLOCK=monotonic: measure the lag that the MS decisions read (the degrade pressure,
 //    the guard, the summary and LF_MS_LC_LAG_NS) on CLOCK_MONOTONIC, anchored to CLOCK_REALTIME at
 //    the first measurement, instead of on CLOCK_REALTIME. A step of the system clock (time sync)
@@ -308,6 +320,19 @@ static int64_t _ms_guard_budget = 0;
 static bool _ms_guard_on = false;
 static bool _ms_lc_lag_active = false;
 static bool _ms_budget_cap = false;
+// Slack budget (LF_MS_SLACK_*)
+static bool _ms_slack_active = false;
+static int64_t _ms_slack_period_ns = 0, _ms_slack_deadline_ns = 0, _ms_slack_margin_ns = 1000000;
+static int _ms_slack_workers = 2;
+static double _ms_slack_c_ns = -1;       // moving average of one LC reaction (wall time), -1 before the first
+static double _ms_slack_h_ns = 0;        // moving average of the HC work of one logical time
+static double _ms_slack_e_ns = 0;        // moving average of the prediction error
+static int64_t _ms_slack_h_acc_ns = 0;   // HC work of the current logical time so far
+static int64_t _ms_slack_budget = -1;    // budget of the current logical time, -1 = none
+static int64_t _ms_slack_pred_ns = 0;    // predicted lag of the next period (for the error)
+static int64_t _ms_slack_pred_for = -1;  // logical time the prediction is for
+static int64_t _ms_slack_wstart[MS_MAX_WORKERS];
+static int8_t _ms_slack_wcrit[MS_MAX_WORKERS];  // 0 none, 1 HC, 2 LC
 #define MS_KEY_TABLE 4096
 static uint64_t _ms_key_tab_key[MS_KEY_TABLE];
 static const void* _ms_key_tab_ptr[MS_KEY_TABLE];
@@ -395,7 +420,8 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
          _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS") || _ms_env_set("LF_MS_REPLAY_X") ||
-         _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK") || _ms_env_set("LF_MS_SUMMARY_EXT");
+         _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK") || _ms_env_set("LF_MS_SUMMARY_EXT") ||
+         _ms_env_set("LF_MS_SLACK_PERIOD_NS") || _ms_env_set("LF_MS_SLACK_DEADLINE_NS");
 }
 
 // Caller holds _ms_lock.
@@ -405,6 +431,33 @@ static void _ms_tag_begin_locked(long long logical_time_ns, uint32_t microstep) 
   _ms_tag_seen_logical = true;
   _ms_tag_last_logical_ns = (int64_t)logical_time_ns;
   _ms_sum_tags++;
+  if (_ms_slack_active) {
+    const int64_t lag0 = _ms_lag_physical_ns() - (int64_t)logical_time_ns;
+    if (_ms_slack_pred_for == (int64_t)logical_time_ns) {
+      _ms_slack_e_ns += ((double)(lag0 - _ms_slack_pred_ns) - _ms_slack_e_ns) / 8.0;
+    }
+    _ms_slack_h_ns += ((double)_ms_slack_h_acc_ns - _ms_slack_h_ns) / 8.0;
+    _ms_slack_h_acc_ns = 0;
+    int64_t b = _ms_policy.default_budget;
+    if (_ms_slack_c_ns > 0) {
+      const double room = ((double)(_ms_slack_period_ns + _ms_slack_deadline_ns - _ms_slack_margin_ns - lag0) -
+                           _ms_slack_e_ns) * _ms_slack_workers - _ms_slack_h_ns;
+      int64_t k = room <= 0 ? 0 : (int64_t)(room / _ms_slack_c_ns);
+      if (k < b) b = k;
+    }
+    if (b < 0) b = 0;
+    _ms_slack_budget = b;
+    const double c = _ms_slack_c_ns > 0 ? _ms_slack_c_ns : 0;
+    const double pred = (double)lag0 + (_ms_slack_h_ns + (double)b * c) / _ms_slack_workers -
+                        (double)_ms_slack_period_ns;
+    _ms_slack_pred_ns = pred > 0 ? (int64_t)pred : 0;
+    _ms_slack_pred_for = (int64_t)logical_time_ns + _ms_slack_period_ns;
+    if (_ms_decision_log != NULL) {
+      _ms_rec("S,%lld,%u,%lld,%lld,%lld,%lld,%lld\n", (long long)((int64_t)logical_time_ns - lf_time_start()),
+              (unsigned)microstep, (long long)b, (long long)lag0, (long long)c, (long long)_ms_slack_h_ns,
+              (long long)_ms_slack_e_ns);
+    }
+  }
   if (_ms_guard_active) {
     const bool on = _ms_guard_on ? _ms_guard_last_lag_ns >= _ms_guard_off_ns : _ms_guard_last_lag_ns >= _ms_guard_on_ns;
     if (on != _ms_guard_on && _ms_decision_log != NULL) {
@@ -777,6 +830,31 @@ static void _ms_link_init(void) {
     _ms_lc_lag_ns = (int64_t)strtoll(getenv("LF_MS_LC_LAG_NS"), &end, 10);
     if (*end != '\0' || _ms_lc_lag_ns <= 0) _ms_link_fatal("invalid LF_MS_LC_LAG_NS", getenv("LF_MS_LC_LAG_NS"));
     _ms_lc_lag_active = true;
+  }
+  if (_ms_env_set("LF_MS_SLACK_PERIOD_NS") || _ms_env_set("LF_MS_SLACK_DEADLINE_NS")) {
+    if (_ms_env_set("LF_MS_REPLAY_D")) {
+      _ms_link_fatal("LF_MS_REPLAY_D and the slack budget (LF_MS_SLACK_*) cannot be combined", NULL);
+    }
+    if (!_ms_degrade_enabled || _ms_policy.degrade_action != MS_DEGRADE_SKIP || _ms_policy.default_budget < 0) {
+      _ms_link_fatal("the slack budget needs LF_MS_DEGRADE_ENABLE, degrade_action=skip and default_budget >= 0", NULL);
+    }
+    const char* names[4] = {"LF_MS_SLACK_PERIOD_NS", "LF_MS_SLACK_DEADLINE_NS", "LF_MS_SLACK_MARGIN_NS", "LF_MS_SLACK_WORKERS"};
+    int64_t vals[4] = {0, 0, _ms_slack_margin_ns, _ms_slack_workers};
+    for (int i = 0; i < 4; i++) {
+      const char* v = getenv(names[i]);
+      if (v == NULL || v[0] == '\0') {
+        if (i < 2) _ms_link_fatal("the slack budget needs both variables", names[i]);
+        continue;
+      }
+      char* end = NULL;
+      vals[i] = (int64_t)strtoll(v, &end, 10);
+      if (*end != '\0' || vals[i] < 0 || (i != 2 && vals[i] == 0)) _ms_link_fatal("invalid slack setting", names[i]);
+    }
+    _ms_slack_period_ns = vals[0];
+    _ms_slack_deadline_ns = vals[1];
+    _ms_slack_margin_ns = vals[2];
+    _ms_slack_workers = (int)vals[3];
+    _ms_slack_active = true;
   }
   if (summary_wanted) {
     if (_ms_env_set("LF_MS_REPLAY_D")) {
@@ -1512,11 +1590,25 @@ void ms_on_reaction_ready(
 
 }
 
+// Whether the last ms_pick_next of this thread returned a candidate. The key is a 64-bit hash returned as
+// long long, so about half of the keys are negative: a caller cannot use the sign (or -1) to tell "no
+// candidate" (fixed 2026-11-12, K3 of demo/sdv: the worker loop tested pick >= 0 and never reordered a
+// reaction with a negative key, so the HC-first order did not reach about half of the HC reactions).
+static __thread int _ms_pick_has = 0;
+
+bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint64_t* key) {
+  const long long p = ms_pick_next(env_id, worker_id, logical_time_ns);
+  if (!_ms_pick_has) return false;
+  *key = (uint64_t)p;
+  return true;
+}
+
 long long ms_pick_next(
     int env_id,
     int worker_id,
     long long logical_time_ns
 ) {
+    _ms_pick_has = 0;
     if (!_ms_enabled) return -1;
     if (_ms_observe_only) {
       if (!_ms_minimal_log) {
@@ -1658,6 +1750,7 @@ long long ms_pick_next(
 
     // Phase 3: return explicit candidate when available to avoid runtime stall.
     if (has_candidate) {
+      _ms_pick_has = 1;
       return (long long)candidate;
     }
     return -1;
@@ -1688,6 +1781,10 @@ void ms_on_reaction_start(
       ms_reaction_policy_t* pol = _ms_find_policy(env_id, reaction_index);
       if (pol == NULL && _ms_policy.default_budget >= 0) {
         pol = _ms_get_policy(env_id, reaction_index, true);
+      }
+      if (_ms_slack_active && worker_id >= 0 && worker_id < MS_MAX_WORKERS) {
+        _ms_slack_wstart[worker_id] = (int64_t)physical_time_ns;
+        _ms_slack_wcrit[worker_id] = (pol != NULL && pol->criticality == MS_CRIT_LOW) ? 2 : 1;
       }
       if (pol != NULL && worker_id >= 0 && worker_id < MS_MAX_WORKERS) {
         _ms_worker_last_crit[worker_id] = pol->criticality;
@@ -1734,14 +1831,21 @@ void ms_on_reaction_end(
     long long physical_time_ns,
     int status
 ) {
-    (void)worker_id;
-    (void)physical_time_ns;
     (void)status;
 
     if (!_ms_enabled) return;
 
     int removed = 0;
     pthread_mutex_lock(&_ms_lock);
+    if (_ms_slack_active && worker_id >= 0 && worker_id < MS_MAX_WORKERS && _ms_slack_wcrit[worker_id] != 0) {
+      const int64_t d = (int64_t)physical_time_ns - _ms_slack_wstart[worker_id];
+      if (_ms_slack_wcrit[worker_id] == 2) {
+        _ms_slack_c_ns = _ms_slack_c_ns < 0 ? (double)d : _ms_slack_c_ns + ((double)d - _ms_slack_c_ns) / 8.0;
+      } else {
+        _ms_slack_h_acc_ns += d;
+      }
+      _ms_slack_wcrit[worker_id] = 0;
+    }
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (set != NULL) {
@@ -1850,7 +1954,7 @@ bool ms_should_skip_reaction(
     pthread_mutex_unlock(&_ms_lock);
     return hit;
   }
-  if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active) {
+  if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active || _ms_slack_active) {
     pthread_mutex_lock(&_ms_lock);
     _ms_tag_begin_locked(logical_time_ns, microstep);
     pthread_mutex_unlock(&_ms_lock);
@@ -1907,7 +2011,7 @@ bool ms_should_skip_reaction(
   // Shedding applies under degrade pressure, or always with LF_MS_BUDGET_CAP=1
   if (set == NULL ||
       env_id < 0 || env_id >= MS_MAX_ENVS ||
-      !(_ms_env_degrade_pressure[env_id] || _ms_budget_cap)) {
+      !(_ms_env_degrade_pressure[env_id] || _ms_budget_cap || _ms_slack_active)) {
     pthread_mutex_unlock(&_ms_lock);
     return false;
   }
@@ -1949,6 +2053,7 @@ bool ms_should_skip_reaction(
     int allow_within_budget = 0;
     int64_t budget = _ms_policy.default_budget;
     if (_ms_guard_on && _ms_guard_budget < budget) budget = _ms_guard_budget;
+    if (_ms_slack_active && _ms_slack_budget >= 0 && _ms_slack_budget < budget) budget = _ms_slack_budget;
     if (budget >= 0 && env_id >= 0 && env_id < MS_MAX_ENVS) {
       if (_ms_env_lc_window_start_ns[env_id] != (int64_t)logical_time_ns) {
         _ms_env_lc_window_start_ns[env_id] = (int64_t)logical_time_ns;

@@ -97,6 +97,9 @@ void ms_on_reaction_ready(
 // Return value:
 //   >= 0 : the scheduler explicitly selects a reaction_index
 //   -1   : no intervention; follow the existing runtime scheduler
+// The key of the reaction the MS picks, if any (use this rather than the sign of ms_pick_next's result).
+bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint64_t* key);
+
 long long ms_pick_next(
     int env_id,
     int worker_id,

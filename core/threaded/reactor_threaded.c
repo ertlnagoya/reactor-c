@@ -1062,20 +1062,21 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #endif
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
-    long long pick = ms_pick_next(env->id, worker_number, (long long)env->current_tag.time);
+    uint64_t pick = 0;
+    const bool has_pick = ms_pick_next_key(env->id, worker_number, (long long)env->current_tag.time, &pick);
     const uint64_t current_key = _ms_reaction_stable_key(current_reaction_to_execute);
 #if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
-    if (pick >= 0 && current_reaction_to_execute != NULL &&
-        (uint64_t)pick != current_key) {
+    if (has_pick && current_reaction_to_execute != NULL &&
+        pick != current_key) {
       reaction_t* picked = lf_sched_requeue_current_and_pick_by_key(
-          env->scheduler, worker_number, current_reaction_to_execute, (uint64_t)pick);
+          env->scheduler, worker_number, current_reaction_to_execute, pick);
       if (picked != NULL) {
         current_reaction_to_execute = picked;
       }
     }
 #else
     // Phase 1-A: ignore the result for now (log-only path)
-    if (pick >= 0) {
+    if (has_pick) {
       // The master scheduler requested a specific reaction,
       // but Phase 1-A does not enforce it yet.
     }
