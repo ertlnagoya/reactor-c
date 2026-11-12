@@ -131,7 +131,7 @@ static uint8_t _ms_worker_crit_mask[MS_MAX_WORKERS] = {0}; // bit0: high, bit1: 
 #define MS_MAX_ENVS 32
 #define MS_MAX_READY_PER_ENV 1024
 
-static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...);
+static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 
 typedef enum {
   MS_READY = 0,
@@ -210,7 +210,10 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    samples, samples_over and lag_max_ns cover the period; samples_over counts the
 //    lag samples at or above LF_MS_SUMMARY_LAG_NS (default 5 ms). A lag sample is taken at the
 //    start of every reaction (HC and LC), so samples_over is not the HC miss rate of a program
-//    that measures its own HC lag at another point. kept_total counts the LC reactions kept by
+//    that measures its own HC lag at another point. With LF_MS_SUMMARY_HC_ONLY=1 only the starts
+//    of reactions that the policy does not mark as LC are sampled: when HC runs first, the LC
+//    starts lag more, and an L2 controller reading all starts would see more pressure than the HC
+//    does. kept_total counts the LC reactions kept by
 //    the budget while shedding applies; LC reactions that run with no shedding are not counted,
 //    so kept_total / (kept_total + shed_total) is not the LC completion rate. The period is
 //    LF_MS_SUMMARY_PERIOD_MS (default 1000). Two fields follow at the end of the line:
@@ -366,6 +369,11 @@ static long long _ms_sum_kept = 0;
 static long long _ms_sum_samples = 0;
 static long long _ms_sum_over = 0;
 static int64_t _ms_sum_lag_max = 0;
+static bool _ms_sum_hc_only = false;                  // LF_MS_SUMMARY_HC_ONLY=1
+static bool _ms_guard_hc_only = false;                // LF_MS_GUARD_HC_ONLY=1
+static int _ms_is_true(const char* s);
+static int64_t _ms_sum_pend_lag[MS_MAX_WORKERS];      // lag of the reaction about to start on each worker
+static bool _ms_sum_pend[MS_MAX_WORKERS];
 static long long _ms_sum_x = 0;
 static long long _ms_sum_cmd_seq = -1;
 
@@ -421,6 +429,7 @@ static bool _ms_link_requested(void) {
          _ms_env_set("LF_MS_LC_LAG_NS") || _ms_env_set("LF_MS_DECISION_SINK") || _ms_env_set("LF_MS_LAG_CLOCK") ||
          _ms_env_set("LF_MS_BUDGET_CAP") || _ms_env_set("LF_MS_KEY_CHECK_TEST_BITS") || _ms_env_set("LF_MS_REPLAY_X") ||
          _ms_env_set("LF_MS_CTRL_SOURCE") || _ms_env_set("LF_MS_SUMMARY_SINK") || _ms_env_set("LF_MS_SUMMARY_EXT") ||
+         _ms_env_set("LF_MS_SUMMARY_HC_ONLY") || _ms_env_set("LF_MS_GUARD_HC_ONLY") ||
          _ms_env_set("LF_MS_SLACK_PERIOD_NS") || _ms_env_set("LF_MS_SLACK_DEADLINE_NS");
 }
 
@@ -788,8 +797,8 @@ static void _ms_link_init(void) {
   }
   const bool summary_wanted = _ms_env_set("LF_MS_SUMMARY_FIFO") || _ms_env_set("LF_MS_SUMMARY_SINK");
   if (!summary_wanted && (_ms_env_set("LF_MS_SUMMARY_PERIOD_MS") || _ms_env_set("LF_MS_SUMMARY_LAG_NS") ||
-                          _ms_env_set("LF_MS_SUMMARY_EXT"))) {
-    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS, LF_MS_SUMMARY_LAG_NS and LF_MS_SUMMARY_EXT need LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK", NULL);
+                          _ms_env_set("LF_MS_SUMMARY_EXT") || _ms_env_set("LF_MS_SUMMARY_HC_ONLY"))) {
+    _ms_link_fatal("LF_MS_SUMMARY_PERIOD_MS, LF_MS_SUMMARY_LAG_NS, LF_MS_SUMMARY_EXT and LF_MS_SUMMARY_HC_ONLY need LF_MS_SUMMARY_FIFO or LF_MS_SUMMARY_SINK", NULL);
   }
   if ((_ms_env_set("LF_MS_GUARD_LAG_NS") || summary_wanted) &&
       _ms_env_set("LF_MS_REPORT_EVERY") && atoi(getenv("LF_MS_REPORT_EVERY")) > 1) {
@@ -818,7 +827,11 @@ static void _ms_link_init(void) {
       _ms_link_fatal("LF_MS_GUARD_LAG_NS needs LF_MS_DEGRADE_LAG_NS set and not above it (or LF_MS_BUDGET_CAP=1)", NULL);
     }
     _ms_guard_active = true;
-  }
+    // LF_MS_GUARD_HC_ONLY=1: the guard reads the lag at the start of the reactions that the policy does not mark
+    // as LC. When HC runs first, the last reaction to start in a tag is often an LC that waited behind it, and its
+    // lag would turn the guard on although the HC kept up.
+    _ms_guard_hc_only = _ms_is_true(getenv("LF_MS_GUARD_HC_ONLY"));
+  }  // without the guard, LF_MS_GUARD_HC_ONLY has no effect
   if (_ms_env_set("LF_MS_LC_LAG_NS")) {
     if (_ms_env_set("LF_MS_REPLAY_D")) {
       _ms_link_fatal("LF_MS_REPLAY_D and LF_MS_LC_LAG_NS cannot be combined", NULL);
@@ -870,6 +883,7 @@ static void _ms_link_init(void) {
         _ms_link_fatal("invalid LF_MS_SUMMARY_PERIOD_MS", getenv("LF_MS_SUMMARY_PERIOD_MS"));
       }
     }
+    _ms_sum_hc_only = _ms_is_true(getenv("LF_MS_SUMMARY_HC_ONLY"));
     if (_ms_env_set("LF_MS_SUMMARY_LAG_NS")) {
       char* end = NULL;
       _ms_sum_lag_ns = (int64_t)strtoll(getenv("LF_MS_SUMMARY_LAG_NS"), &end, 10);
@@ -1733,9 +1747,9 @@ long long ms_pick_next(
         _ms_logf(
             MS_LEVEL_DEBUG,
             "event=pick_next env=%d candidate=%llu reason=%s deadline=%lld ready_time=%lld logical=%lld ready_count=%d ready_set=%s",
-            env_id, (unsigned long long)candidate, (long long)candidate_deadline,
+            env_id, (unsigned long long)candidate,
             (force_hc_guard || degrade_pressure || _ms_hc_strict_priority) ? "hc_first" : "earliest_deadline",
-            (long long)candidate_ready, logical_time_ns, ready_count,
+            (long long)candidate_deadline, (long long)candidate_ready, logical_time_ns, ready_count,
             ready_buf[0] != '\0' ? ready_buf : "-"
         );
       } else {
@@ -1767,6 +1781,19 @@ void ms_on_reaction_start(
     int found = 0;
     long long last_pick = -1;
     pthread_mutex_lock(&_ms_lock);
+    if (worker_id >= 0 && worker_id < MS_MAX_WORKERS && _ms_sum_pend[worker_id]) {
+      _ms_sum_pend[worker_id] = false;
+      ms_reaction_policy_t* sp = _ms_find_policy(env_id, reaction_index);
+      if (sp == NULL || sp->criticality != MS_CRIT_LOW) {
+        const int64_t lag_ns = _ms_sum_pend_lag[worker_id];
+        if (_ms_guard_hc_only) _ms_guard_last_lag_ns = lag_ns;
+        if (_ms_sum_active && _ms_sum_hc_only) {
+          _ms_sum_samples++;
+          if (lag_ns >= _ms_sum_lag_ns) _ms_sum_over++;
+          if (lag_ns > _ms_sum_lag_max) _ms_sum_lag_max = lag_ns;
+        }
+      }
+    }
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (set != NULL) {
@@ -2130,8 +2157,13 @@ void ms_on_metrics(
   };
 
   pthread_mutex_lock(&_ms_lock);
-  _ms_guard_last_lag_ns = lag_ns;
-  if (_ms_sum_active) {
+  if (!_ms_guard_hc_only) _ms_guard_last_lag_ns = lag_ns;
+  if (_ms_guard_hc_only || (_ms_sum_active && _ms_sum_hc_only)) {
+    // used in ms_on_reaction_start, once the criticality of the reaction is known
+    _ms_sum_pend_lag[worker_id] = lag_ns;
+    _ms_sum_pend[worker_id] = true;
+  }
+  if (_ms_sum_active && !_ms_sum_hc_only) {
     _ms_sum_samples++;
     if (lag_ns >= _ms_sum_lag_ns) _ms_sum_over++;
     if (lag_ns > _ms_sum_lag_max) _ms_sum_lag_max = lag_ns;
