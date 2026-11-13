@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -267,7 +268,10 @@ static int64_t _ms_env_lc_used_in_window[MS_MAX_ENVS] = {0};
 //    runtime does not link S-CORE. Needs LF_MS_DECISION_LOG; the file and the sink get the
 //    same lines, in the same order, under the same lock.
 // Times are relative to the start time, so they compare across runs. The link
-// supports one environment of the threaded runtime and refuses anything else.
+// supports one environment of the threaded runtime and refuses anything else, unless
+// LF_MS_LINK_ENV=<n> names it: then the link (shedding, records, replay, guard, summary, commands) and the lag
+// samples act on environment n only (an enclave, e.g. the LC of a program), and the reactions of the other
+// environments run unshed and do not feed the lag the MS reads.
 typedef struct {
   int env_id;
   int64_t elapsed_ns;
@@ -371,6 +375,26 @@ static long long _ms_sum_over = 0;
 static int64_t _ms_sum_lag_max = 0;
 static bool _ms_sum_hc_only = false;                  // LF_MS_SUMMARY_HC_ONLY=1
 static bool _ms_guard_hc_only = false;                // LF_MS_GUARD_HC_ONLY=1
+// LF_MS_LINK_ENV: -2 not read yet, -1 not set (the link refuses environments other than 0), n the link's environment
+static int _ms_link_env = -2;
+static int _ms_link_env_get(void) {
+  if (_ms_link_env == -2) {
+    const char* v = getenv("LF_MS_LINK_ENV");
+    _ms_link_env = (v != NULL && v[0] != '\0') ? atoi(v) : -1;
+  }
+  return _ms_link_env;
+}
+// true when this environment is outside the link: the caller returns without a decision
+static bool _ms_env_outside_link(int env_id) {
+  const int le = _ms_link_env_get();
+  return le >= 0 && env_id != le;
+}
+// LF_MS_RT_HC_PRIO=<p> (1-99): a worker thread runs every reaction that the policy does not mark as LC in SCHED_FIFO
+// at priority p, and every LC reaction in SCHED_OTHER, switching at the start of a reaction when the class changes.
+// LC reactions thus never run at a real-time priority, whichever worker takes them (the worker partition of
+// LF_MS_WORKER_PARTITION_ENABLE only steers the pick and lets an HC worker run LC). Needs CAP_SYS_NICE (sudo).
+static int _ms_rt_hc_prio = -1;                       // -1: not read yet
+static __thread int _ms_rt_cur = -1;                  // this worker's class: -1 unknown, 0 SCHED_OTHER, 1 SCHED_FIFO
 static int _ms_is_true(const char* s);
 static int64_t _ms_sum_pend_lag[MS_MAX_WORKERS];      // lag of the reaction about to start on each worker
 static bool _ms_sum_pend[MS_MAX_WORKERS];
@@ -1780,7 +1804,17 @@ void ms_on_reaction_start(
 
     int found = 0;
     long long last_pick = -1;
+    if (_ms_rt_hc_prio < 0) {
+      const char* rp = getenv("LF_MS_RT_HC_PRIO");
+      int p = (rp != NULL && rp[0] != '\0') ? atoi(rp) : 0;
+      _ms_rt_hc_prio = (p >= 1 && p <= 99) ? p : 0;
+    }
+    int rt_want = -1;
     pthread_mutex_lock(&_ms_lock);
+    if (_ms_rt_hc_prio > 0) {
+      ms_reaction_policy_t* rpol = _ms_find_policy(env_id, reaction_index);
+      rt_want = (rpol != NULL && rpol->criticality == MS_CRIT_LOW) ? 0 : 1;
+    }
     if (worker_id >= 0 && worker_id < MS_MAX_WORKERS && _ms_sum_pend[worker_id]) {
       _ms_sum_pend[worker_id] = false;
       ms_reaction_policy_t* sp = _ms_find_policy(env_id, reaction_index);
@@ -1824,6 +1858,17 @@ void ms_on_reaction_start(
       }
     }
     pthread_mutex_unlock(&_ms_lock);
+    if (rt_want >= 0 && rt_want != _ms_rt_cur && _ms_rt_cur != -2) {
+      struct sched_param sp;
+      memset(&sp, 0, sizeof sp);
+      sp.sched_priority = rt_want ? _ms_rt_hc_prio : 0;
+      if (pthread_setschedparam(pthread_self(), rt_want ? SCHED_FIFO : SCHED_OTHER, &sp) == 0) {
+        _ms_rt_cur = rt_want;
+      } else {
+        _ms_rt_cur = -2;  // warn once per thread and stop trying
+        fprintf(stderr, "master_scheduler: LF_MS_RT_HC_PRIO: pthread_setschedparam failed (needs CAP_SYS_NICE)\n");
+      }
+    }
 
     if (!_ms_minimal_log) {
       _ms_logf(
@@ -1940,6 +1985,7 @@ void ms_on_reaction_violation(
     uint32_t microstep
 ) {
   if (!_ms_enabled || !_ms_link_active) return;
+  if (_ms_env_outside_link(env_id)) return;
   pthread_mutex_lock(&_ms_lock);
   if (_ms_replay_active) {
     _ms_replay_mark_locked(&_ms_replay_x, env_id, reaction_index, logical_time_ns, microstep);
@@ -1961,8 +2007,9 @@ bool ms_should_skip_reaction(
 ) {
   (void)worker_id;
   if (!_ms_enabled) return false;
-  if (_ms_link_active && env_id != 0) {
-    _ms_link_fatal("the orchestrator link supports one environment", NULL);
+  if (_ms_env_outside_link(env_id)) return false;
+  if (_ms_link_active && env_id != 0 && _ms_link_env_get() < 0) {
+    _ms_link_fatal("the orchestrator link supports one environment (set LF_MS_LINK_ENV to choose one)", NULL);
   }
   if (_ms_replay_active) {
     pthread_mutex_lock(&_ms_lock);
@@ -1983,6 +2030,11 @@ bool ms_should_skip_reaction(
   }
   if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active || _ms_slack_active) {
     pthread_mutex_lock(&_ms_lock);
+    if (_ms_guard_active && !_ms_guard_hc_only && _ms_link_env_get() >= 0) {
+      // With LF_MS_LINK_ENV the link's environment may hold only LC reactions: once the guard sheds them all, no
+      // reaction starts and ms_on_metrics takes no lag sample, so the guard would stay on. Take one at the decision.
+      _ms_guard_last_lag_ns = _ms_lag_physical_ns() - (int64_t)logical_time_ns;
+    }
     _ms_tag_begin_locked(logical_time_ns, microstep);
     pthread_mutex_unlock(&_ms_lock);
   }
@@ -2135,10 +2187,10 @@ void ms_on_metrics(
     int ready_q_len,
     int64_t ptdv_ns
 ) {
-  (void)env_id;
   (void)ptdv_ns;
 
   if (!_ms_enabled) return;
+  if (_ms_env_outside_link(env_id)) return;  // the lag of another environment does not press this one
   if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return;
   if (_ms_lag_mono) {
     // Same logical time, physical time from the monotonic clock (LF_MS_LAG_CLOCK=monotonic)
