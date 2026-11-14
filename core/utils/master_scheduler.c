@@ -20,6 +20,20 @@
 // ---------------- Internal state ----------------
 
 static pthread_mutex_t _ms_lock = PTHREAD_MUTEX_INITIALIZER;
+// LF_MS_LOCK_PI=1: make _ms_lock a priority-inheritance mutex, so that a worker at normal priority (the LC
+// enclave) that holds it while an HC worker at real-time priority waits for it runs at the waiter's priority
+// (S5g of demo/sdv: the rest of the HC delay after S5f was this wait). Set before main, before any use.
+__attribute__((constructor)) static void _ms_lock_pi_init(void) {
+  const char* e = getenv("LF_MS_LOCK_PI");
+  if (e == NULL || e[0] != '1') return;
+  pthread_mutexattr_t a;
+  pthread_mutexattr_init(&a);
+  if (pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_INHERIT) == 0) {
+    pthread_mutex_destroy(&_ms_lock);
+    pthread_mutex_init(&_ms_lock, &a);
+  }
+  pthread_mutexattr_destroy(&a);
+}
 // Time this thread spent blocked on _ms_lock (for LF_MS_HCTRACE): a trylock first, so the uncontended case costs nothing.
 static __thread int64_t _ms_tl_lockwait_ns = 0;
 static void _ms_lock_take(void) {
