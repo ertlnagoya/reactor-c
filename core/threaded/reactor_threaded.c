@@ -969,6 +969,16 @@ static inline bool _ms_should_report(void) {
  * @param worker_number The ID of the worker.
  * @param reaction The reaction to invoke.
  */
+// "<reactor full name>.<reaction number>", for the keys file of LF_MS_HCTRACE (called once per key).
+static const char* _ms_hctrace_name(const void* r, int unused) {
+  (void)unused;
+  static __thread char buf[256];
+  const reaction_t* reaction = (const reaction_t*)r;
+  snprintf(buf, sizeof buf, "%s.%d",
+           reaction->self != NULL ? lf_reactor_full_name((self_base_t*)reaction->self) : "?", reaction->number);
+  return buf;
+}
+
 static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, reaction_t* reaction) {
   // ---- Phase 0.5: observability report (before executing reaction) ----
   if (_ms_should_report()) {
@@ -1024,7 +1034,9 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
                reaction->name, env->current_tag.time - start_time, env->current_tag.microstep);
 
   // Notify execution start
-  ms_on_reaction_start(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical());
+  ms_hctrace_start();
+  const long long ms_t_start = (long long)lf_time_physical();
+  ms_on_reaction_start(env->id, worker_number, _ms_reaction_stable_key(reaction), ms_t_start);
 
   _lf_invoke_reaction(env, reaction, worker_number);
 
@@ -1032,7 +1044,10 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
   schedule_output_reactions(env, reaction, worker_number);
 
   // Notify execution end
-  ms_on_reaction_end(env->id, worker_number, _ms_reaction_stable_key(reaction), (long long)lf_time_physical(), 0);
+  const long long ms_t_end = (long long)lf_time_physical();
+  ms_on_reaction_end(env->id, worker_number, _ms_reaction_stable_key(reaction), ms_t_end, 0);
+  ms_hctrace_reaction(env->id, worker_number, _ms_reaction_stable_key(reaction), _ms_hctrace_name, reaction,
+                      (long long)env->current_tag.time, ms_t_start, ms_t_end);
 
   reaction->is_STP_violated = false;
 }
@@ -1062,6 +1077,7 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
 #endif
   // Fall back to the existing scheduler
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
+    ms_hctrace_got();
     uint64_t pick = 0;
     const bool has_pick = ms_pick_next_key(env->id, worker_number, (long long)env->current_tag.time, &pick);
     const uint64_t current_key = _ms_reaction_stable_key(current_reaction_to_execute);

@@ -15,10 +15,21 @@
 #include <dlfcn.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 
 // ---------------- Internal state ----------------
 
 static pthread_mutex_t _ms_lock = PTHREAD_MUTEX_INITIALIZER;
+// Time this thread spent blocked on _ms_lock (for LF_MS_HCTRACE): a trylock first, so the uncontended case costs nothing.
+static __thread int64_t _ms_tl_lockwait_ns = 0;
+static void _ms_lock_take(void) {
+  if (pthread_mutex_trylock(&_ms_lock) == 0) return;
+  struct timespec a, b;
+  clock_gettime(CLOCK_MONOTONIC, &a);
+  pthread_mutex_lock(&_ms_lock);
+  clock_gettime(CLOCK_MONOTONIC, &b);
+  _ms_tl_lockwait_ns += (int64_t)(b.tv_sec - a.tv_sec) * 1000000000LL + (b.tv_nsec - a.tv_nsec);
+}
 static FILE* _ms_log = NULL;
 static bool _ms_enabled = true;
 static ms_log_level_t _ms_level = MS_LEVEL_INFO;
@@ -557,7 +568,7 @@ static bool _ms_ctrl_parse(const char* line, long long* seq, long long* budget) 
 // time) when it parsed, its seq increases and the budget is >= 0; refused (R record) otherwise.
 static bool _ms_ctrl_accept(bool parsed, long long seq, long long budget) {
   const int64_t recv_ns = _ms_now_mono_ns();
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   const bool valid = parsed && seq > _ms_ctrl_last_seq && budget >= 0;
   if (valid) {
     _ms_ctrl_last_seq = seq;
@@ -619,7 +630,7 @@ static void* _ms_summary_thread(void* arg) {
   for (;;) {
     nanosleep(&period, NULL);
     seq++;
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     const long long budget = (long long)_ms_policy.default_budget;
     const long long shed = _ms_sum_shed;
     const long long kept = _ms_sum_kept;
@@ -1340,7 +1351,7 @@ static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) {
   if (!_ms_enabled) return;
   if (lvl > _ms_level) return;
 
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   FILE* out = _ms_log;
   if (out == NULL) {
     pthread_mutex_unlock(&_ms_lock);
@@ -1381,7 +1392,7 @@ bool ms_init(const char* config_path) {
   _ms_logf(MS_LEVEL_INFO, "event=ms_init level=%s", _ms_level_str(_ms_level));
 
   // Register shutdown at process exit so it runs even if generated code calls exit(0).
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   if (!_ms_atexit_registered) {
     atexit(_ms_shutdown_atexit);
     _ms_atexit_registered = true;
@@ -1394,13 +1405,13 @@ bool ms_init(const char* config_path) {
   // Allow hard disable via env var for near-zero overhead.
   if (_ms_is_true(getenv("LF_MS_DISABLE"))) {
     if (_ms_link_requested()) _ms_link_fatal("the orchestrator link cannot run with LF_MS_DISABLE", NULL);
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     _ms_enabled = false;
     pthread_mutex_unlock(&_ms_lock);
     return true;
   }
   if (_ms_is_true(getenv("LF_MS_OBSERVE_ONLY"))) {
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     _ms_observe_only = true;
     pthread_mutex_unlock(&_ms_lock);
   }
@@ -1417,7 +1428,7 @@ bool ms_init(const char* config_path) {
     path = "/tmp/lf_master_scheduler_phase0.log";
   }
 
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   if (_ms_log != NULL) {
     pthread_mutex_unlock(&_ms_lock);
     return true; // already initialized
@@ -1454,7 +1465,7 @@ bool ms_init(const char* config_path) {
 }
 
 void ms_shutdown_at_exit(void) {
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   _ms_record_sink = NULL;
   pthread_mutex_unlock(&_ms_lock);
   pthread_mutex_lock(&_ms_sum_sink_lock);
@@ -1468,7 +1479,7 @@ void ms_shutdown(void) {
   pthread_mutex_lock(&_ms_sum_sink_lock);
   _ms_sum_sink = NULL;
   pthread_mutex_unlock(&_ms_sum_sink_lock);
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
 
   // Avoid double shutdown (runtime hook + atexit, etc.)
   if (_ms_shutdown_called) {
@@ -1504,13 +1515,13 @@ void ms_shutdown(void) {
 }
 
 void ms_set_log_level(ms_log_level_t level) {
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   _ms_level = level;
   pthread_mutex_unlock(&_ms_lock);
 }
 
 void ms_set_enabled(bool enabled) {
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   _ms_enabled = enabled;
   pthread_mutex_unlock(&_ms_lock);
 }
@@ -1580,7 +1591,7 @@ void ms_on_reaction_ready(
     int dropped = 0;
     int64_t ready_time = _ms_now_mono_ns();
 
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (set == NULL) {
@@ -1678,7 +1689,7 @@ long long ms_pick_next(
     const ms_criticality_t target_crit = _ms_worker_target_crit(worker_id);
     const int partition_enabled = _ms_partition_enabled;
 
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     if (_ms_enabled && _ms_log != NULL) {
       ms_ready_set_t* set = _ms_get_ready_set(env_id);
       if (_ms_os_config.hc_guard_enabled &&
@@ -1810,7 +1821,7 @@ void ms_on_reaction_start(
       _ms_rt_hc_prio = (p >= 1 && p <= 99) ? p : 0;
     }
     int rt_want = -1;
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     if (_ms_rt_hc_prio > 0) {
       ms_reaction_policy_t* rpol = _ms_find_policy(env_id, reaction_index);
       rt_want = (rpol != NULL && rpol->criticality == MS_CRIT_LOW) ? 0 : 1;
@@ -1908,7 +1919,7 @@ void ms_on_reaction_end(
     if (!_ms_enabled) return;
 
     int removed = 0;
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     if (_ms_slack_active && worker_id >= 0 && worker_id < MS_MAX_WORKERS && _ms_slack_wcrit[worker_id] != 0) {
       const int64_t d = (int64_t)physical_time_ns - _ms_slack_wstart[worker_id];
       if (_ms_slack_wcrit[worker_id] == 2) {
@@ -1947,7 +1958,7 @@ void ms_check_reaction_key(uint64_t key, const void* reaction, const char* insta
   const char* other = NULL;
   int other_number = -1;
   bool full = false;
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   size_t i = (size_t)((k ^ (k >> 29) ^ (k >> 47)) & (MS_KEY_TABLE - 1));
   for (int n = 0; n < MS_KEY_TABLE; n++, i = (i + 1) & (MS_KEY_TABLE - 1)) {
     if (_ms_key_tab_ptr[i] == NULL) {
@@ -1986,7 +1997,7 @@ void ms_on_reaction_violation(
 ) {
   if (!_ms_enabled || !_ms_link_active) return;
   if (_ms_env_outside_link(env_id)) return;
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   if (_ms_replay_active) {
     _ms_replay_mark_locked(&_ms_replay_x, env_id, reaction_index, logical_time_ns, microstep);
   } else if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active) {
@@ -2012,7 +2023,7 @@ bool ms_should_skip_reaction(
     _ms_link_fatal("the orchestrator link supports one environment (set LF_MS_LINK_ENV to choose one)", NULL);
   }
   if (_ms_replay_active) {
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     const bool hit = _ms_replay_mark_locked(&_ms_replay_d, env_id, reaction_index, logical_time_ns, microstep);
     if (hit) {
       ms_ready_set_t* replay_set = _ms_get_ready_set(env_id);
@@ -2029,7 +2040,7 @@ bool ms_should_skip_reaction(
     return hit;
   }
   if (_ms_ctrl_active || _ms_guard_active || _ms_sum_active || _ms_slack_active) {
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
     if (_ms_guard_active && !_ms_guard_hc_only && _ms_link_env_get() >= 0) {
       // With LF_MS_LINK_ENV the link's environment may hold only LC reactions: once the guard sheds them all, no
       // reaction starts and ms_on_metrics takes no lag sample, so the guard would stay on. Take one at the decision.
@@ -2047,7 +2058,7 @@ bool ms_should_skip_reaction(
   char ready_buf[1024];
   ready_buf[0] = '\0';
 
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   ms_ready_set_t* set = _ms_get_ready_set(env_id);
 
   if (_ms_degrade_debug) {
@@ -2070,7 +2081,7 @@ bool ms_should_skip_reaction(
              "event=degrade_dbg env=%d rid=%llu crit=%d degradable=%d pressure=%d has_hc_ready=%d ready_count=%d",
              env_id, (unsigned long long)reaction_index, dbg_crit, dbg_degr,
              dbg_pressure, dbg_hcr, dbg_rc);
-    pthread_mutex_lock(&_ms_lock);
+    _ms_lock_take();
   }
 
   // Reaction-scale shedding (LF_MS_LC_LAG_NS): the test of a deadline handler, recorded in D.
@@ -2208,7 +2219,7 @@ void ms_on_metrics(
     .affinity_mask = 0
   };
 
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   if (!_ms_guard_hc_only) _ms_guard_last_lag_ns = lag_ns;
   if (_ms_guard_hc_only || (_ms_sum_active && _ms_sum_hc_only)) {
     // used in ms_on_reaction_start, once the criticality of the reaction is known
@@ -2338,7 +2349,7 @@ bool ms_take_os_policy(int worker_id, ms_os_policy_t* out_policy) {
   if (out_policy == NULL) return false;
   if (worker_id < 0 || worker_id >= MS_MAX_WORKERS) return false;
 
-  pthread_mutex_lock(&_ms_lock);
+  _ms_lock_take();
   if (_ms_worker_policy_pending[worker_id]) {
     *out_policy = _ms_worker_pending_policy[worker_id];
     _ms_worker_policy_pending[worker_id] = 0;
@@ -2377,4 +2388,146 @@ void ms_log_os_policy_skip(int worker_id, const ms_os_policy_t* policy, const ch
       worker_id, (reason != NULL ? reason : "(null)"),
       policy->nice_delta, _ms_sched_policy_str(policy->sched_policy)
   );
+}
+
+// ---------------- LF_MS_HCTRACE: where the time before a reaction goes ----------------
+// LF_MS_HCTRACE=<file>: every reaction of every environment appends one record of 120 bytes to <file>, a file mapped
+// with MAP_SHARED, so the records survive a kill. LF_MS_HCTRACE_MAX bounds the records (default 600000); later
+// reactions are not recorded. <file>.keys gets "key<TAB>name" the first time a key is seen.
+// The times are lf_time_physical() (the clock of the tags); rq and cpu are the run_delay and the sum_exec_runtime of
+// the worker thread from /proc/thread-self/schedstat (ns), lockw the time it spent blocked on _ms_lock (cumulative).
+// "got" is when lf_sched_get_ready_reaction returned this reaction to the worker, before the MS pick and checks,
+// "start" just before ms_on_reaction_start, "end" just after the reaction and the scheduling of its outputs.
+typedef struct {
+  int64_t tag;
+  int64_t t_got, rq_got, cpu_got, lockw_got;
+  int64_t t_start, rq_start, cpu_start, lockw_start;
+  int64_t t_end, rq_end, cpu_end, lockw_end;
+  uint64_t key;
+  int32_t tid;
+  int8_t env, worker, rt_got, rt_start;
+} ms_hctrace_rec_t;  // 120 bytes
+static int _ms_hct_state = -1;  // -1: not read, 0: off, 1: on
+static ms_hctrace_rec_t* _ms_hct_recs = NULL;
+static long _ms_hct_max = 0;
+static long _ms_hct_next = 0;
+static FILE* _ms_hct_keys = NULL;
+static pthread_mutex_t _ms_hct_klock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t _ms_hct_kseen[512];
+static int _ms_hct_nk = 0;
+static __thread int _ms_hct_fd = -1;
+static __thread int64_t _ms_hct_tgot, _ms_hct_rqgot, _ms_hct_cpugot, _ms_hct_lwgot;
+static __thread int64_t _ms_hct_rqst, _ms_hct_cpust, _ms_hct_lwst;
+static __thread int _ms_hct_rtgot;
+static __thread uint64_t _ms_hct_tlk[64];
+static __thread int _ms_hct_tlnk = 0;
+
+static void _ms_hct_init(void) {
+  pthread_mutex_lock(&_ms_hct_klock);
+  if (_ms_hct_state < 0) {
+    const char* p = getenv("LF_MS_HCTRACE");
+    _ms_hct_state = 0;
+    if (p != NULL && p[0] != '\0') {
+      const char* m = getenv("LF_MS_HCTRACE_MAX");
+      long max = (m != NULL && atol(m) > 0) ? atol(m) : 600000;
+      int fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0644);
+      if (fd >= 0 && ftruncate(fd, (off_t)(max * (long)sizeof(ms_hctrace_rec_t))) == 0) {
+        void* a = mmap(NULL, (size_t)max * sizeof(ms_hctrace_rec_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (a != MAP_FAILED) {
+          char kp[1024];
+          snprintf(kp, sizeof kp, "%s.keys", p);
+          _ms_hct_keys = fopen(kp, "w");
+          _ms_hct_recs = (ms_hctrace_rec_t*)a;
+          _ms_hct_max = max;
+          _ms_hct_state = 1;
+        }
+      }
+      if (fd >= 0) close(fd);
+      if (_ms_hct_state != 1) fprintf(stderr, "master_scheduler: LF_MS_HCTRACE: cannot map %s\n", p);
+    }
+  }
+  pthread_mutex_unlock(&_ms_hct_klock);
+}
+
+static void _ms_hct_sched(int64_t* rq, int64_t* cpu) {
+  char b[128];
+  *rq = *cpu = -1;
+  if (_ms_hct_fd < 0) _ms_hct_fd = open("/proc/thread-self/schedstat", O_RDONLY);
+  if (_ms_hct_fd < 0) return;
+  ssize_t n = pread(_ms_hct_fd, b, sizeof b - 1, 0);
+  if (n <= 0) return;
+  b[n] = '\0';
+  long long c = -1, r = -1;
+  if (sscanf(b, "%lld %lld", &c, &r) == 2) {
+    *cpu = c;
+    *rq = r;
+  }
+}
+
+void ms_hctrace_got(void) {
+  if (_ms_hct_state < 0) _ms_hct_init();
+  if (_ms_hct_state != 1) return;
+  _ms_hct_tgot = (int64_t)lf_time_physical();
+  _ms_hct_sched(&_ms_hct_rqgot, &_ms_hct_cpugot);
+  _ms_hct_lwgot = _ms_tl_lockwait_ns;
+  _ms_hct_rtgot = _ms_rt_cur;
+}
+
+void ms_hctrace_start(void) {
+  if (_ms_hct_state != 1) return;
+  _ms_hct_sched(&_ms_hct_rqst, &_ms_hct_cpust);
+  _ms_hct_lwst = _ms_tl_lockwait_ns;
+}
+
+void ms_hctrace_reaction(int env_id, int worker_id, uint64_t key, const char* (*name_of)(const void*, int),
+                         const void* reaction, long long tag, long long t_start, long long t_end) {
+  if (_ms_hct_state != 1) return;
+  ms_hctrace_rec_t r;
+  r.tag = tag;
+  r.t_got = _ms_hct_tgot;
+  r.t_start = t_start;
+  r.t_end = t_end;
+  r.rq_got = _ms_hct_rqgot;
+  r.cpu_got = _ms_hct_cpugot;
+  r.lockw_got = _ms_hct_lwgot;
+  r.rq_start = _ms_hct_rqst;
+  r.cpu_start = _ms_hct_cpust;
+  r.lockw_start = _ms_hct_lwst;
+  _ms_hct_sched(&r.rq_end, &r.cpu_end);
+  r.lockw_end = _ms_tl_lockwait_ns;
+  r.key = key;
+  r.tid = (int32_t)syscall(SYS_gettid);
+  r.env = (int8_t)env_id;
+  r.worker = (int8_t)worker_id;
+  r.rt_got = (int8_t)_ms_hct_rtgot;
+  r.rt_start = (int8_t)_ms_rt_cur;
+  long i = __atomic_fetch_add(&_ms_hct_next, 1, __ATOMIC_RELAXED);
+  if (i < _ms_hct_max) _ms_hct_recs[i] = r;
+  int seen = 0;
+  for (int j = 0; j < _ms_hct_tlnk; j++) {
+    if (_ms_hct_tlk[j] == key) {
+      seen = 1;
+      break;
+    }
+  }
+  if (!seen) {
+    if (_ms_hct_tlnk < 64) _ms_hct_tlk[_ms_hct_tlnk++] = key;
+    pthread_mutex_lock(&_ms_hct_klock);
+    int g = 0;
+    for (int j = 0; j < _ms_hct_nk; j++) {
+      if (_ms_hct_kseen[j] == key) {
+        g = 1;
+        break;
+      }
+    }
+    if (!g && _ms_hct_nk < 512) {
+      _ms_hct_kseen[_ms_hct_nk++] = key;
+      if (_ms_hct_keys != NULL) {
+        const char* name = name_of != NULL ? name_of(reaction, 0) : NULL;
+        fprintf(_ms_hct_keys, "%llu\t%d\t%s\n", (unsigned long long)key, env_id, name != NULL ? name : "?");
+        fflush(_ms_hct_keys);
+      }
+    }
+    pthread_mutex_unlock(&_ms_hct_klock);
+  }
 }

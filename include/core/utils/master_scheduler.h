@@ -77,6 +77,13 @@ void ms_report(const ms_report_t* report);
 void ms_shutdown(void);
 /** Stops the program when two different reactions have the same stable key (link active only). */
 void ms_check_reaction_key(uint64_t key, const void* reaction, const char* instance, int number);
+/** LF_MS_HCTRACE (master_scheduler.c): call ms_hctrace_got when the scheduler hands a worker a reaction, and
+ * ms_hctrace_start just before ms_on_reaction_start, and
+ * ms_hctrace_reaction after the reaction ran (t_start and t_end as given to ms_on_reaction_start/end). */
+void ms_hctrace_got(void);
+void ms_hctrace_start(void);
+void ms_hctrace_reaction(int env_id, int worker_id, uint64_t key, const char* (*name_of)(const void*, int),
+                         const void* reaction, long long tag, long long t_start, long long t_end);
 /** ms_shutdown from atexit: the record sink is dropped first, since the library behind it may be torn down. */
 void ms_shutdown_at_exit(void);
 
