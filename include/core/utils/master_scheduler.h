@@ -111,6 +111,8 @@ bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint
 /** LF_MS_PICK_CLAIM: name the reaction this worker holds before ms_pick_next, and settle the pick after the swap
  * (swapped: the scheduler handed over the pick and took the current reaction back). */
 void ms_pick_set_current(uint64_t key);
+/** The tag of the reaction this worker is about to start (LF_MS_RT_HC_HOLD, LF_MS_LTHIST). */
+void ms_note_tag(long long tag);
 void ms_pick_settle(int env_id, int worker_id, uint64_t current_key, uint64_t pick_key, bool swapped);
 
 long long ms_pick_next(

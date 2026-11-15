@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE  // cpu_set_t, sched_setaffinity (LF_MS_PIN_WORKERS)
+#endif
 #include "master_scheduler.h"
 
 #include <stdio.h>
@@ -430,6 +433,26 @@ static bool _ms_env_outside_link(int env_id) {
 // LF_MS_WORKER_PARTITION_ENABLE only steers the pick and lets an HC worker run LC). Needs CAP_SYS_NICE (sudo).
 static int _ms_rt_hc_prio = -1;                       // -1: not read yet
 static __thread int _ms_rt_cur = -1;                  // this worker's class: -1 unknown, 0 SCHED_OTHER, 1 SCHED_FIFO
+// LF_MS_RT_HC_HOLD=1 (A4l): with LF_MS_RT_HC_PRIO, a worker that switched to SCHED_FIFO keeps it for the rest of the
+// logical time (its LC reactions of that tag also run in SCHED_FIFO) and switches back at its first LC reaction of a
+// later tag. LF_MS_PIN_WORKERS=<cpu>,<cpu>,... (A4l): worker w pins itself to the (w mod n)-th listed CPU at its first
+// reaction, so that it cannot move to the CPU of another worker.
+static int _ms_rt_hc_hold = -1;                       // -1: not read yet
+static __thread long long _ms_rt_tag = -1;            // the tag at which this worker switched to SCHED_FIFO
+static __thread long long _ms_cur_tag_tl = -1;        // the tag of the reaction this worker is about to start
+static int _ms_pin_n = -1;                            // -1: not read yet
+static int _ms_pin_cpu[64];
+static __thread int _ms_pin_done = 0;
+// LF_MS_LTHIST=<path> (A4l): a histogram, kept in memory and written at exit, of the start-to-start time of the logical
+// times (first reaction start of a tag to the first reaction start of the next tag, 10 us bins up to 20 ms) per number of
+// reactions of the tag, for tags in [LF_MS_LTHIST_FROM_NS, LF_MS_LTHIST_TO_NS) after the start (default: all).
+#define MS_LTH_BINS 2001
+#define MS_LTH_N 16
+static int _ms_lth_on = -1;
+static long long _ms_lth_from = 0, _ms_lth_to = -1;
+static long long _ms_lth_tag = -1, _ms_lth_start = 0;
+static int _ms_lth_cnt = 0;
+static unsigned int _ms_lth[MS_LTH_N][MS_LTH_BINS];
 static int _ms_is_true(const char* s);
 static int64_t _ms_sum_pend_lag[MS_MAX_WORKERS];      // lag of the reaction about to start on each worker
 static bool _ms_sum_pend[MS_MAX_WORKERS];
@@ -1513,6 +1536,17 @@ void ms_shutdown(void) {
   }
   _ms_shutdown_called = true;
 
+  if (_ms_lth_on > 0) {
+    FILE* hf = fopen(getenv("LF_MS_LTHIST"), "w");
+    if (hf != NULL) {
+      fprintf(hf, "nreact bin_10us count\n");
+      for (int n = 0; n < MS_LTH_N; n++)
+        for (int b = 0; b < MS_LTH_BINS; b++)
+          if (_ms_lth[n][b] != 0) fprintf(hf, "%d %d %u\n", n, b, _ms_lth[n][b]);
+      fclose(hf);
+    }
+  }
+
   if (_ms_replay_active && !_ms_link_failed) {
     const bool ok = _ms_replay_d.seen == _ms_replay_d.count && _ms_replay_d.unexpected == 0 &&
                     _ms_replay_x.seen == _ms_replay_x.count && _ms_replay_x.unexpected == 0;
@@ -1678,6 +1712,8 @@ bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint
   *key = (uint64_t)p;
   return true;
 }
+
+void ms_note_tag(long long tag) { _ms_cur_tag_tl = tag; }
 
 void ms_pick_set_current(uint64_t key) {
   _ms_pick_cur_key = key;
@@ -1884,8 +1920,55 @@ void ms_on_reaction_start(
       int p = (rp != NULL && rp[0] != '\0') ? atoi(rp) : 0;
       _ms_rt_hc_prio = (p >= 1 && p <= 99) ? p : 0;
     }
+    if (_ms_rt_hc_hold < 0) _ms_rt_hc_hold = _ms_is_true(getenv("LF_MS_RT_HC_HOLD")) ? 1 : 0;
+    if (_ms_pin_n < 0) {
+      int n = 0;
+      const char* pw = getenv("LF_MS_PIN_WORKERS");
+      while (pw != NULL && *pw != '\0' && n < 64) {
+        char* e = NULL;
+        long c = strtol(pw, &e, 10);
+        if (e == pw) break;
+        _ms_pin_cpu[n++] = (int)c;
+        pw = (*e == ',') ? e + 1 : e;
+      }
+      _ms_pin_n = n;
+    }
+    if (_ms_lth_on < 0) {
+      const char* lp = getenv("LF_MS_LTHIST");
+      const char* lf = getenv("LF_MS_LTHIST_FROM_NS");
+      const char* lt = getenv("LF_MS_LTHIST_TO_NS");
+      if (lf != NULL && lf[0] != '\0') _ms_lth_from = strtoll(lf, NULL, 10);
+      if (lt != NULL && lt[0] != '\0') _ms_lth_to = strtoll(lt, NULL, 10);
+      _ms_lth_on = (lp != NULL && lp[0] != '\0') ? 1 : 0;
+    }
+    if (_ms_pin_n > 0 && !_ms_pin_done && worker_id >= 0) {
+      _ms_pin_done = 1;
+      cpu_set_t cs;
+      CPU_ZERO(&cs);
+      CPU_SET(_ms_pin_cpu[worker_id % _ms_pin_n], &cs);
+      if (sched_setaffinity(0, sizeof cs, &cs) != 0) {
+        fprintf(stderr, "master_scheduler: LF_MS_PIN_WORKERS: sched_setaffinity to CPU %d failed (errno %d)\n",
+                _ms_pin_cpu[worker_id % _ms_pin_n], errno);
+      }
+    }
     int rt_want = -1;
     _ms_lock_take();
+    if (_ms_lth_on > 0 && _ms_cur_tag_tl >= 0 && _ms_cur_tag_tl != _ms_lth_tag) {
+      // the first reaction start of a new tag (under the MS lock) closes the previous tag
+      if (_ms_lth_tag >= 0) {
+        const long long rel = _ms_lth_tag - (long long)lf_time_start();
+        if (rel >= _ms_lth_from && (_ms_lth_to < 0 || rel < _ms_lth_to)) {
+          long long b = (physical_time_ns - _ms_lth_start) / 10000;
+          if (b < 0) b = 0;
+          if (b >= MS_LTH_BINS) b = MS_LTH_BINS - 1;
+          _ms_lth[_ms_lth_cnt < MS_LTH_N ? _ms_lth_cnt : MS_LTH_N - 1][b]++;
+        }
+      }
+      _ms_lth_tag = _ms_cur_tag_tl;
+      _ms_lth_start = physical_time_ns;
+      _ms_lth_cnt = 0;
+    }
+    if (_ms_lth_on > 0 && _ms_cur_tag_tl == _ms_lth_tag) _ms_lth_cnt++;
     if (_ms_rt_hc_prio > 0) {
       ms_reaction_policy_t* rpol = _ms_find_policy(env_id, reaction_index);
       rt_want = (rpol != NULL && rpol->criticality == MS_CRIT_LOW) ? 0 : 1;
@@ -1933,12 +2016,17 @@ void ms_on_reaction_start(
       }
     }
     pthread_mutex_unlock(&_ms_lock);
+    if (rt_want == 0 && _ms_rt_hc_hold > 0 && _ms_rt_cur == 1 && _ms_cur_tag_tl == _ms_rt_tag) {
+      rt_want = 1;  // LF_MS_RT_HC_HOLD: keep SCHED_FIFO until a later tag
+    }
+    if (rt_want == 1 && _ms_rt_cur == 1) _ms_rt_tag = _ms_cur_tag_tl;
     if (rt_want >= 0 && rt_want != _ms_rt_cur && _ms_rt_cur != -2) {
       struct sched_param sp;
       memset(&sp, 0, sizeof sp);
       sp.sched_priority = rt_want ? _ms_rt_hc_prio : 0;
       if (pthread_setschedparam(pthread_self(), rt_want ? SCHED_FIFO : SCHED_OTHER, &sp) == 0) {
         _ms_rt_cur = rt_want;
+        if (rt_want) _ms_rt_tag = _ms_cur_tag_tl;
       } else {
         _ms_rt_cur = -2;  // warn once per thread and stop trying
         fprintf(stderr, "master_scheduler: LF_MS_RT_HC_PRIO: pthread_setschedparam failed (needs CAP_SYS_NICE)\n");

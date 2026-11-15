@@ -1035,6 +1035,7 @@ static void _lf_worker_invoke_reaction(environment_t* env, int worker_number, re
 
   // Notify execution start
   ms_hctrace_start();
+  ms_note_tag((long long)env->current_tag.time);
   const long long ms_t_start = (long long)lf_time_physical();
   ms_on_reaction_start(env->id, worker_number, _ms_reaction_stable_key(reaction), ms_t_start);
 
