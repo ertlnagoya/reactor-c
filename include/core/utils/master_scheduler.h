@@ -82,6 +82,8 @@ void ms_check_reaction_key(uint64_t key, const void* reaction, const char* insta
  * ms_hctrace_reaction after the reaction ran (t_start and t_end as given to ms_on_reaction_start/end). */
 void ms_hctrace_got(void);
 void ms_hctrace_start(void);
+/** LF_MS_HCTRACE: the reaction the scheduler handed over and the MS pick (0: none), for the next record. */
+void ms_hctrace_pick(uint64_t got_key, uint64_t pick_key);
 void ms_hctrace_reaction(int env_id, int worker_id, uint64_t key, const char* (*name_of)(const void*, int),
                          const void* reaction, long long tag, long long t_start, long long t_end);
 /** ms_shutdown from atexit: the record sink is dropped first, since the library behind it may be torn down. */
@@ -106,6 +108,10 @@ void ms_on_reaction_ready(
 //   -1   : no intervention; follow the existing runtime scheduler
 // The key of the reaction the MS picks, if any (use this rather than the sign of ms_pick_next's result).
 bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint64_t* key);
+/** LF_MS_PICK_CLAIM: name the reaction this worker holds before ms_pick_next, and settle the pick after the swap
+ * (swapped: the scheduler handed over the pick and took the current reaction back). */
+void ms_pick_set_current(uint64_t key);
+void ms_pick_settle(int env_id, int worker_id, uint64_t current_key, uint64_t pick_key, bool swapped);
 
 long long ms_pick_next(
     int env_id,

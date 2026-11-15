@@ -1079,13 +1079,17 @@ static void _lf_worker_do_work(environment_t* env, int worker_number) {
   while ((current_reaction_to_execute = lf_sched_get_ready_reaction(env->scheduler, worker_number)) != NULL) {
     ms_hctrace_got();
     uint64_t pick = 0;
-    const bool has_pick = ms_pick_next_key(env->id, worker_number, (long long)env->current_tag.time, &pick);
     const uint64_t current_key = _ms_reaction_stable_key(current_reaction_to_execute);
+    ms_pick_set_current(current_key);
+    const bool has_pick = ms_pick_next_key(env->id, worker_number, (long long)env->current_tag.time, &pick);
+    ms_hctrace_pick(current_key, has_pick ? pick : 0);
 #if !defined(SCHEDULER) || SCHEDULER == SCHED_NP || SCHEDULER == SCHED_GEDF_NP || SCHEDULER == SCHED_ADAPTIVE
     if (has_pick && current_reaction_to_execute != NULL &&
         pick != current_key) {
       reaction_t* picked = lf_sched_requeue_current_and_pick_by_key(
           env->scheduler, worker_number, current_reaction_to_execute, pick);
+      const bool swapped = picked != NULL && picked != current_reaction_to_execute;
+      ms_pick_settle(env->id, worker_number, current_key, pick, swapped);
       if (picked != NULL) {
         current_reaction_to_execute = picked;
       }

@@ -162,7 +162,8 @@ static void _ms_logf(ms_log_level_t lvl, const char* fmt, ...) __attribute__((fo
 typedef enum {
   MS_READY = 0,
   MS_RUNNING = 1,
-  MS_DEFERRED = 2
+  MS_DEFERRED = 2,
+  MS_CLAIMED = 3  // LF_MS_PICK_CLAIM: held by worker claim_worker, taken out of the scheduler's queue but not started
 } ms_ready_state_t;
 
 typedef struct {
@@ -171,6 +172,7 @@ typedef struct {
   int64_t ready_time_ns;
   int is_input;
   ms_ready_state_t state;
+  int claim_worker;
 } ms_ready_entry_t;
 
 typedef struct {
@@ -188,6 +190,14 @@ static int _ms_degrade_ready_q_len_threshold = -1;
 // When set, HC reactions are always picked before LC (criticality-monotonic),
 // not only during transient overload pressure. Opt-in via LF_MS_HC_STRICT_PRIORITY.
 static bool _ms_hc_strict_priority = false;
+// LF_MS_PICK_CLAIM=1 (A4k): a reaction that a worker holds counts as taken from the time the scheduler hands it over,
+// not only from ms_on_reaction_start. Without it, two workers that take reactions at about the same time both see the
+// reaction the other holds as ready; the one holding an LC picks the HC the other holds, the swap fails (that HC is no
+// longer in the scheduler's queue) and it runs its LC, while the second HC waits for a worker. The worker loop names its
+// current reaction with ms_pick_set_current before ms_pick_next, and settles the pick with ms_pick_settle after the swap.
+static bool _ms_pick_claim = false;
+static __thread uint64_t _ms_pick_cur_key = 0;
+static __thread int _ms_pick_cur_set = 0;
 // Diagnostic: when LF_MS_DEGRADE_DEBUG=1, ms_should_skip_reaction logs the gating
 // state (pressure / has_hc_ready / criticality) for every evaluation, to root-
 // cause why degradation does/doesn't fire. Off by default (no normal-run impact).
@@ -1320,6 +1330,7 @@ static void _ms_os_load_env(void) {
     _ms_degrade_ready_q_len_threshold = atoi(drq);
   }
   _ms_hc_strict_priority = _ms_is_true(getenv("LF_MS_HC_STRICT_PRIORITY"));
+  _ms_pick_claim = _ms_is_true(getenv("LF_MS_PICK_CLAIM"));
   _ms_degrade_debug = _ms_is_true(getenv("LF_MS_DEGRADE_DEBUG"));
   _ms_partition_hc_workers = 0;
   const char* phc = getenv("LF_MS_HC_WORKERS");
@@ -1618,6 +1629,7 @@ void ms_on_reaction_ready(
           entry->ready_time_ns = ready_time;
           entry->is_input = is_input;
           entry->state = MS_READY;
+          entry->claim_worker = -1;
           updated = 1;
         } else if (set->count < MS_MAX_READY_PER_ENV) {
           ms_ready_entry_t* entry = &set->entries[set->count++];
@@ -1626,6 +1638,7 @@ void ms_on_reaction_ready(
           entry->ready_time_ns = ready_time;
           entry->is_input = is_input;
           entry->state = MS_READY;
+          entry->claim_worker = -1;
         } else {
           dropped = 1;
         }
@@ -1664,6 +1677,26 @@ bool ms_pick_next_key(int env_id, int worker_id, long long logical_time_ns, uint
   if (!_ms_pick_has) return false;
   *key = (uint64_t)p;
   return true;
+}
+
+void ms_pick_set_current(uint64_t key) {
+  _ms_pick_cur_key = key;
+  _ms_pick_cur_set = 1;
+}
+
+void ms_pick_settle(int env_id, int worker_id, uint64_t current_key, uint64_t pick_key, bool swapped) {
+  if (!_ms_enabled || !_ms_pick_claim) return;
+  _ms_lock_take();
+  ms_ready_set_t* set = _ms_get_ready_set(env_id);
+  if (set != NULL) {
+    // The reaction that goes back to the scheduler's queue is ready again: the current one after a swap, else the pick.
+    const int i = _ms_ready_find(set, swapped ? current_key : pick_key);
+    if (i >= 0 && set->entries[i].state == MS_CLAIMED && set->entries[i].claim_worker == worker_id) {
+      set->entries[i].state = MS_READY;
+      set->entries[i].claim_worker = -1;
+    }
+  }
+  pthread_mutex_unlock(&_ms_lock);
 }
 
 long long ms_pick_next(
@@ -1716,11 +1749,20 @@ long long ms_pick_next(
           _ms_env_degrade_pressure[env_id]) {
         degrade_pressure = 1;
       }
+      const int claim = _ms_pick_claim && _ms_pick_cur_set;
+      if (set != NULL && claim) {
+        const int ci = _ms_ready_find(set, _ms_pick_cur_key);
+        if (ci >= 0 && set->entries[ci].state != MS_RUNNING) {
+          set->entries[ci].state = MS_CLAIMED;
+          set->entries[ci].claim_worker = worker_id;
+        }
+      }
       if (set != NULL) {
         int i = 0;
         while (i < set->count) {
           ms_ready_entry_t* entry = &set->entries[i];
-          if (entry->state == MS_RUNNING) {
+          if (entry->state == MS_RUNNING ||
+              (claim && entry->state == MS_CLAIMED && entry->claim_worker != worker_id)) {
             i++;
             continue;
           }
@@ -1787,9 +1829,17 @@ long long ms_pick_next(
           has_candidate = 1;
         }
         set->last_pick_reaction_index = has_candidate ? (long long)candidate : -1;
+        if (claim && has_candidate && candidate != _ms_pick_cur_key) {
+          const int ki = _ms_ready_find(set, candidate);
+          if (ki >= 0 && set->entries[ki].state == MS_READY) {
+            set->entries[ki].state = MS_CLAIMED;
+            set->entries[ki].claim_worker = worker_id;
+          }
+        }
       }
     }
     pthread_mutex_unlock(&_ms_lock);
+    _ms_pick_cur_set = 0;
 
     if (!_ms_minimal_log) {
       if (has_candidate) {
@@ -2412,6 +2462,8 @@ void ms_log_os_policy_skip(int worker_id, const ms_os_policy_t* policy, const ch
 // the worker thread from /proc/thread-self/schedstat (ns), lockw the time it spent blocked on _ms_lock (cumulative).
 // "got" is when lf_sched_get_ready_reaction returned this reaction to the worker, before the MS pick and checks,
 // "start" just before ms_on_reaction_start, "end" just after the reaction and the scheduling of its outputs.
+// got_key is the reaction the scheduler handed over, pick_key the MS pick (0: none); key differs from got_key after a
+// swap, and pick_key differs from key when a swap failed (A4k: records of 136 bytes, 120 before).
 typedef struct {
   int64_t tag;
   int64_t t_got, rq_got, cpu_got, lockw_got;
@@ -2420,7 +2472,8 @@ typedef struct {
   uint64_t key;
   int32_t tid;
   int8_t env, worker, rt_got, rt_start;
-} ms_hctrace_rec_t;  // 120 bytes
+  uint64_t got_key, pick_key;
+} ms_hctrace_rec_t;  // 136 bytes
 static int _ms_hct_state = -1;  // -1: not read, 0: off, 1: on
 static ms_hctrace_rec_t* _ms_hct_recs = NULL;
 static long _ms_hct_max = 0;
@@ -2433,6 +2486,7 @@ static __thread int _ms_hct_fd = -1;
 static __thread int64_t _ms_hct_tgot, _ms_hct_rqgot, _ms_hct_cpugot, _ms_hct_lwgot;
 static __thread int64_t _ms_hct_rqst, _ms_hct_cpust, _ms_hct_lwst;
 static __thread int _ms_hct_rtgot;
+static __thread uint64_t _ms_hct_gotkey, _ms_hct_pickkey;
 static __thread uint64_t _ms_hct_tlk[64];
 static __thread int _ms_hct_tlnk = 0;
 
@@ -2487,6 +2541,11 @@ void ms_hctrace_got(void) {
   _ms_hct_rtgot = _ms_rt_cur;
 }
 
+void ms_hctrace_pick(uint64_t got_key, uint64_t pick_key) {
+  _ms_hct_gotkey = got_key;
+  _ms_hct_pickkey = pick_key;
+}
+
 void ms_hctrace_start(void) {
   if (_ms_hct_state != 1) return;
   _ms_hct_sched(&_ms_hct_rqst, &_ms_hct_cpust);
@@ -2515,6 +2574,8 @@ void ms_hctrace_reaction(int env_id, int worker_id, uint64_t key, const char* (*
   r.worker = (int8_t)worker_id;
   r.rt_got = (int8_t)_ms_hct_rtgot;
   r.rt_start = (int8_t)_ms_rt_cur;
+  r.got_key = _ms_hct_gotkey;
+  r.pick_key = _ms_hct_pickkey;
   long i = __atomic_fetch_add(&_ms_hct_next, 1, __ATOMIC_RELAXED);
   if (i < _ms_hct_max) _ms_hct_recs[i] = r;
   int seen = 0;
