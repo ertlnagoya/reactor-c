@@ -34,12 +34,103 @@ static rti_local_t* rti_local;
 // The RTI mutex. A pointer to this mutex will be put on the rti_local struct
 lf_mutex_t rti_mutex;
 
+#if !defined(PLATFORM_ZEPHYR) && !defined(PLATFORM_FLEXPRET) && !defined(PLATFORM_ARDUINO) && !defined(PLATFORM_RP2040)
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+// LF_MS_RTI_PI=1 (experiment A4p of docs/PREREG.ja.md of lf-ms-orchestration): make rti_mutex, which every enclave
+// takes to advance its tag and to report a completed tag, a priority-inheritance mutex (still recursive), so that a
+// worker at normal priority (the LC enclave) that holds it while an HC worker at real-time priority waits for it
+// runs at the waiter's priority. LF_MS_RTI_WAITLOG=<us>: record every wait for rti_mutex of at least <us>
+// microseconds (site 1: tag advance, 2: tag complete, 3: NET update), and every hold of at least <us> at sites 2
+// and 3, in a ring of 8192, written to stderr at exit as
+// "RTI_WAIT tid=<tid> site=<s> kind=<wait|hold> start_ns=<CLOCK_MONOTONIC> dur_ns=<ns>".
+typedef struct {
+  int tid, site, hold;
+  int64_t start, dur;
+} _rti_wrec_t;
+static _rti_wrec_t _rti_wring[8192];
+static long _rti_wn = 0;
+static int64_t _rti_wthr = -1;  // ns; -1 = not read yet, 0 = off
+static int64_t _rti_now(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+static void _rti_wdump(void) {
+  long n = _rti_wn < 8192 ? _rti_wn : 8192;
+  for (long i = 0; i < n; i++)
+    fprintf(stderr, "RTI_WAIT tid=%d site=%d kind=%s start_ns=%lld dur_ns=%lld\n", _rti_wring[i].tid, _rti_wring[i].site,
+            _rti_wring[i].hold ? "hold" : "wait", (long long)_rti_wring[i].start, (long long)_rti_wring[i].dur);
+  fprintf(stderr, "RTI_WAIT_TOTAL n=%ld thr_ns=%lld\n", _rti_wn, (long long)_rti_wthr);
+}
+static void _rti_wput(int site, int hold, int64_t start, int64_t dur) {
+  long i = __atomic_fetch_add(&_rti_wn, 1, __ATOMIC_RELAXED);
+  _rti_wring[i % 8192] = (_rti_wrec_t){(int)syscall(SYS_gettid), site, hold, start, dur};
+}
+// Take rti_mutex; returns the time it was taken (0 when the log is off).
+static int64_t _rti_lock(int site) {
+  if (_rti_wthr <= 0) {
+    LF_MUTEX_LOCK(&rti_mutex);
+    return 0;
+  }
+  int64_t a = _rti_now();
+  if (pthread_mutex_trylock((pthread_mutex_t*)&rti_mutex) != 0) {
+    LF_MUTEX_LOCK(&rti_mutex);
+  }
+  int64_t b = _rti_now();
+  if (b - a >= _rti_wthr) _rti_wput(site, 0, a, b - a);
+  return b;
+}
+static void _rti_unlock(int site, int64_t got) {
+  LF_MUTEX_UNLOCK(&rti_mutex);
+  if (got > 0) {
+    int64_t e = _rti_now();
+    if (e - got >= _rti_wthr) _rti_wput(site, 1, got, e - got);
+  }
+}
+static void _rti_options(void) {
+  const char* e = getenv("LF_MS_RTI_PI");
+  if (e != NULL && e[0] == '1') {
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    int rc = pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_INHERIT);
+    if (rc == 0) {
+      pthread_mutex_destroy((pthread_mutex_t*)&rti_mutex);
+      rc = pthread_mutex_init((pthread_mutex_t*)&rti_mutex, &a);
+    }
+    pthread_mutexattr_destroy(&a);
+    fprintf(stderr, "RTI_PI rc=%d\n", rc);
+  }
+  const char* w = getenv("LF_MS_RTI_WAITLOG");
+  _rti_wthr = (w != NULL && atol(w) > 0) ? atol(w) * 1000LL : 0;
+  if (_rti_wthr > 0) atexit(_rti_wdump);
+}
+#else
+static int64_t _rti_lock(int site) {
+  (void)site;
+  LF_MUTEX_LOCK(&rti_mutex);
+  return 0;
+}
+static void _rti_unlock(int site, int64_t got) {
+  (void)site;
+  (void)got;
+  LF_MUTEX_UNLOCK(&rti_mutex);
+}
+static void _rti_options(void) {}
+#endif
+
 void initialize_local_rti(environment_t* envs, int num_envs) {
   rti_local = (rti_local_t*)calloc(1, sizeof(rti_local_t));
   LF_ASSERT_NON_NULL(rti_local);
 
   initialize_rti_common(&rti_local->base);
   LF_MUTEX_INIT(&rti_mutex);
+  _rti_options();
   rti_local->base.mutex = &rti_mutex;
   rti_local->base.number_of_scheduling_nodes = num_envs;
 #ifdef LF_TRACE
@@ -90,7 +181,7 @@ tag_t rti_next_event_tag_locked(enclave_info_t* e, tag_t next_event_tag) {
   // This is called from a critical section within the source enclave. Leave
   // this critical section and acquire the RTI mutex.
   LF_MUTEX_UNLOCK(&e->env->mutex);
-  LF_MUTEX_LOCK(rti_local->base.mutex);
+  _rti_lock(1);
   tracepoint_federate_to_rti(send_NET, e->base.id, &next_event_tag);
   // First, update the enclave data structure to record this next_event_tag,
   // and notify any downstream scheduling_nodes, and unblock them if appropriate.
@@ -151,7 +242,9 @@ void rti_logical_tag_complete_locked(enclave_info_t* enclave, tag_t completed) {
   // Release the enclave mutex while doing the local RTI work.
   LF_MUTEX_UNLOCK(&enclave->env->mutex);
   tracepoint_federate_to_rti(send_LTC, enclave->base.id, &completed);
+  int64_t got = _rti_lock(2);
   _logical_tag_complete(&enclave->base, completed);
+  _rti_unlock(2, got);
   // Acquire the enclave mutex again before returning.
   LF_MUTEX_LOCK(&enclave->env->mutex);
 }
@@ -159,14 +252,14 @@ void rti_logical_tag_complete_locked(enclave_info_t* enclave, tag_t completed) {
 void rti_update_other_net_locked(enclave_info_t* src, enclave_info_t* target, tag_t net) {
   // Here we do NOT leave the critical section of the target enclave before we
   // acquire the RTI mutex. This means that we cannot block within this function.
-  LF_MUTEX_LOCK(rti_local->base.mutex);
+  int64_t got = _rti_lock(3);
   tracepoint_federate_to_federate(send_TAGGED_MSG, src->base.id, target->base.id, &net);
 
   // If our proposed NET is less than the current NET, update it.
   if (lf_tag_compare(net, target->base.next_event) < 0) {
     target->base.next_event = net;
   }
-  LF_MUTEX_UNLOCK(rti_local->base.mutex);
+  _rti_unlock(3, got);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

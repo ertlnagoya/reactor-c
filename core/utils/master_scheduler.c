@@ -2590,6 +2590,16 @@ static void _ms_hct_init(void) {
       if (fd >= 0 && ftruncate(fd, (off_t)(max * (long)sizeof(ms_hctrace_rec_t))) == 0) {
         void* a = mmap(NULL, (size_t)max * sizeof(ms_hctrace_rec_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (a != MAP_FAILED) {
+          // LF_MS_HCTRACE_POPULATE=1 (experiment A4p): write every page of the record now, so that no worker
+          // takes a page fault on the record during the run (in A4o the HC workers waited behind the LC worker
+          // that held a new page of the record in /dev/shm while it slept).
+          const char* pp = getenv("LF_MS_HCTRACE_POPULATE");
+          if (pp != NULL && pp[0] == '1') {
+            long pg = sysconf(_SC_PAGESIZE);
+            size_t len = (size_t)max * sizeof(ms_hctrace_rec_t);
+            for (size_t o = 0; o < len; o += (size_t)(pg > 0 ? pg : 4096)) ((volatile char*)a)[o] = 0;
+            fprintf(stderr, "master_scheduler: LF_MS_HCTRACE_POPULATE: %zu bytes\n", len);
+          }
           char kp[1024];
           snprintf(kp, sizeof kp, "%s.keys", p);
           _ms_hct_keys = fopen(kp, "w");
