@@ -36,6 +36,7 @@ lf_mutex_t rti_mutex;
 
 #if !defined(PLATFORM_ZEPHYR) && !defined(PLATFORM_FLEXPRET) && !defined(PLATFORM_ARDUINO) && !defined(PLATFORM_RP2040)
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -48,6 +49,45 @@ lf_mutex_t rti_mutex;
 // microseconds (site 1: tag advance, 2: tag complete, 3: NET update), and every hold of at least <us> at sites 2
 // and 3, in a ring of 8192, written to stderr at exit as
 // "RTI_WAIT tid=<tid> site=<s> kind=<wait|hold> start_ns=<CLOCK_MONOTONIC> dur_ns=<ns>".
+// LF_MS_RTI_BOOST=<prio> (experiment A4r): a thread at a non-real-time policy (the LC worker) runs in SCHED_FIFO <prio>
+// from just before it takes rti_mutex at sites 2 and 3 until it has released it (the priority-ceiling protocol, done by
+// hand because PTHREAD_PRIO_PROTECT of glibc cannot raise a SCHED_OTHER thread), so that threads at normal priority
+// cannot preempt it while it holds the lock. Prints "RTI_BOOST prio=<prio>" at the start and
+// "RTI_BOOST_TOTAL n=<boosts> fail=<failed sched_setscheduler calls>" at exit.
+static int _rti_boost = 0;
+static long _rti_bn = 0, _rti_bfail = 0;
+static __thread int _rti_bdepth = 0, _rti_bpol = -1;
+static void _rti_bdump(void) { fprintf(stderr, "RTI_BOOST_TOTAL n=%ld fail=%ld\n", _rti_bn, _rti_bfail); }
+static void _rti_up(int site) {
+#if defined(__linux__)
+  if (_rti_boost <= 0 || site < 2) return;
+  if (_rti_bdepth++ > 0) return;
+  int pol = sched_getscheduler(0);
+  if (pol == SCHED_FIFO || pol == SCHED_RR || pol < 0) return;
+  struct sched_param sp = {.sched_priority = _rti_boost};
+  if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+    __atomic_fetch_add(&_rti_bfail, 1, __ATOMIC_RELAXED);
+    return;
+  }
+  __atomic_fetch_add(&_rti_bn, 1, __ATOMIC_RELAXED);
+  _rti_bpol = pol;
+#else
+  (void)site;
+#endif
+}
+static void _rti_down(int site) {
+#if defined(__linux__)
+  if (_rti_boost <= 0 || site < 2) return;
+  if (--_rti_bdepth > 0) return;
+  if (_rti_bpol >= 0) {
+    struct sched_param sp = {.sched_priority = 0};
+    if (sched_setscheduler(0, _rti_bpol, &sp) != 0) __atomic_fetch_add(&_rti_bfail, 1, __ATOMIC_RELAXED);
+    _rti_bpol = -1;
+  }
+#else
+  (void)site;
+#endif
+}
 typedef struct {
   int tid, site, hold;
   int64_t start, dur;
@@ -73,6 +113,7 @@ static void _rti_wput(int site, int hold, int64_t start, int64_t dur) {
 }
 // Take rti_mutex; returns the time it was taken (0 when the log is off).
 static int64_t _rti_lock(int site) {
+  _rti_up(site);
   if (_rti_wthr <= 0) {
     LF_MUTEX_LOCK(&rti_mutex);
     return 0;
@@ -91,6 +132,7 @@ static void _rti_unlock(int site, int64_t got) {
     int64_t e = _rti_now();
     if (e - got >= _rti_wthr) _rti_wput(site, 1, got, e - got);
   }
+  _rti_down(site);
 }
 static void _rti_options(void) {
   const char* e = getenv("LF_MS_RTI_PI");
@@ -109,6 +151,12 @@ static void _rti_options(void) {
   const char* w = getenv("LF_MS_RTI_WAITLOG");
   _rti_wthr = (w != NULL && atol(w) > 0) ? atol(w) * 1000LL : 0;
   if (_rti_wthr > 0) atexit(_rti_wdump);
+  const char* b = getenv("LF_MS_RTI_BOOST");
+  _rti_boost = (b != NULL && atoi(b) > 0 && atoi(b) <= 99) ? atoi(b) : 0;
+  if (_rti_boost > 0) {
+    fprintf(stderr, "RTI_BOOST prio=%d\n", _rti_boost);
+    atexit(_rti_bdump);
+  }
 }
 #else
 static int64_t _rti_lock(int site) {
