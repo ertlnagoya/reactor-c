@@ -81,6 +81,9 @@ void ms_check_reaction_key(uint64_t key, const void* reaction, const char* insta
  * ms_hctrace_start just before ms_on_reaction_start, and
  * ms_hctrace_reaction after the reaction ran (t_start and t_end as given to ms_on_reaction_start/end). */
 void ms_hctrace_got(void);
+/** LF_MS_HCTRACE_EARLY=1 (experiment A4t): map the record (and, with LF_MS_HCTRACE_POPULATE=1, write its pages) now.
+ * Called before the start time is read, so that this is not done inside the first reaction. */
+void ms_hctrace_early(void);
 void ms_hctrace_start(void);
 /** LF_MS_HCTRACE: the reaction the scheduler handed over and the MS pick (0: none), for the next record. */
 void ms_hctrace_pick(uint64_t got_key, uint64_t pick_key);

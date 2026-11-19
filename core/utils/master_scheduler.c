@@ -2630,6 +2630,15 @@ static void _ms_hct_sched(int64_t* rq, int64_t* cpu) {
   }
 }
 
+void ms_hctrace_early(void) {
+  const char* e = getenv("LF_MS_HCTRACE_EARLY");
+  if (e == NULL || e[0] != '1') return;
+  int64_t t0 = (int64_t)lf_time_physical();
+  if (_ms_hct_state < 0) _ms_hct_init();
+  fprintf(stderr, "master_scheduler: LF_MS_HCTRACE_EARLY: state=%d %.1f ms\n", _ms_hct_state,
+          ((int64_t)lf_time_physical() - t0) / 1e6);
+}
+
 void ms_hctrace_got(void) {
   if (_ms_hct_state < 0) _ms_hct_init();
   if (_ms_hct_state != 1) return;

@@ -1383,6 +1383,8 @@ int lf_reactor_c_main(int argc, const char* argv[]) {
 
   // Initialize the clock through the platform API. No reading of physical time before this.
   _lf_initialize_clock();
+  // LF_MS_HCTRACE_EARLY=1: prepare the reaction record before the start time (experiment A4t).
+  ms_hctrace_early();
   start_time = lf_time_physical();
 #ifndef FEDERATED
   lf_tracing_set_start_time(start_time);
